@@ -16,7 +16,7 @@ from bokeh.io import show, output_notebook
 from bokeh.plotting import figure
 from bokeh.models.glyphs import VBar
 from bokeh.embed import components
-from bokeh.charts import Histogram, Bar
+# from bokeh.charts import , Bar
 from math import pi
 
 
@@ -150,14 +150,19 @@ class RawTable:
                     p_input = self.tbl[c].dropna().value_counts().sort_index()
                     p = figure(x_range=p_input.index.tolist(), plot_width=figsize[0], plot_height=figsize[1], title=None,
                                toolbar_location=None, tools="")
-                    p.vbar(x=p_input.index.values, top=p_input.values, width=0.5)                    
+                    p.vbar(x=p_input.index.values, top=p_input.values, width=0.5, line_color="#033649")                    
                 else:
                     if self.dtypes[c] == "int64" and self.ncounts[c] > 0:
                         p_input = stats.trimboth(pd.to_numeric(self.tbl[c].dropna()), proportiontocut)
                     else:
                         p_input = stats.trimboth(self.tbl[c].dropna(), proportiontocut)
-                    p = Histogram(p_input, plot_width=figsize[0], plot_height=figsize[1], 
-                        bins=min(self.vcounts[c], max_bins), title=None, toolbar_location=None )
+                    hist, edges = np.histogram(p_input, density=False, bins=min(self.vcounts[c], max_bins))
+                    p = figure(plot_width=figsize[0], plot_height=figsize[1], title=None,
+                               toolbar_location=None, tools="")
+                    p.quad(top=hist, bottom=0, left=edges[:-1], right=edges[1:],
+                            fill_color="#E05F68", line_color="#033649")                    
+                    # p = Histogram(p_input, plot_width=figsize[0], plot_height=figsize[1], 
+                    #     bins=min(self.vcounts[c], max_bins), title=None, toolbar_location=None )
                 p.yaxis.axis_label = "count"
                 p.xaxis.axis_label = c
                 p.xaxis.major_label_orientation = pi/4
