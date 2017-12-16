@@ -16,7 +16,7 @@ from bokeh.io import show, output_notebook
 from bokeh.plotting import figure
 from bokeh.models.glyphs import VBar
 from bokeh.embed import components
-from bkcharts import Histogram, Bar
+from bokeh.charts import Histogram, Bar
 from math import pi
 
 
@@ -53,7 +53,7 @@ def sample_bq_table(query_raw, n, project_id, hash_key = "session_id", debug=Fal
         query_sample = query_raw
     # print query_sample 
     res = pd.read_gbq(query_sample, verbose=False, project_id=project_id)
-    print "%d / %d = %d" % (rowcount, sample_rate, len(res)) 
+    print("%d / %d = %d" % (rowcount, sample_rate, len(res)))
     return res
 
 
@@ -164,7 +164,7 @@ class RawTable:
                 script, div = components(p)
                 return script + div
         except Exception as e:
-            print c, e
+            print(c, e)
 
     ### CORRELATION ANALYSIS
 
@@ -185,7 +185,7 @@ class RawTable:
             cols = self.cols
         tbl_full = self.tbl[cols].dropna()
         if len(tbl_full) < len(self.tbl):
-            print "%d rows removed" % (len(self.tbl) - len(tbl_full))
+            print("%d rows removed" % (len(self.tbl) - len(tbl_full)))
         sns.set(style="ticks")
         sns.pairplot(tbl_full)
 
