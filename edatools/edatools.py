@@ -21,10 +21,10 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from statsmodels.graphics.mosaicplot import mosaic
 from IPython.display import display, HTML, Image
 
-from bokeh.palettes import d3
+from bokeh.palettes import d3, brewer
 from bokeh.io import show, output_notebook
 from bokeh.plotting import figure, ColumnDataSource
-from bokeh.models import HoverTool, Range1d, CategoricalColorMapper
+from bokeh.models import HoverTool, Range1d, CategoricalColorMapper, LinearColorMapper
 from bokeh.models.glyphs import VBar
 from bokeh.embed import components
 from math import pi
@@ -34,6 +34,7 @@ except:
     from itertools import izip_longest as zip_longest
 
 sns.set(color_codes=True)
+sns.set(font_scale=1.2)
 pd.options.display.max_rows = 999
 pd.options.display.max_columns = 999
 pd.options.display.max_colwidth = 999
@@ -50,6 +51,10 @@ def grouper(n, iterable, fillvalue=None):
     return zip_longest(*args, fillvalue=fillvalue)
 
 
+def title(title, level=3):
+    display(HTML("<h%d>%s</h%d>" % (level, title, level)))
+
+
 def load_bokeh():
     """Initialize Bokeh JS for notebook display"""
     output_notebook(verbose=False, hide_banner=True)
@@ -63,7 +68,8 @@ def load_bokeh():
     display(HTML(res.format(version=bokeh.__version__)))
 
 
-def sample_bq_table(query_raw, project_id, n=None, sample_rate=None, hash_key=SAMPLING_HASHKEY, random_seed=0, debug=False, **kwargs):
+def sample_bq_table(query_raw, project_id, n=None, sample_rate=None, hash_key=SAMPLING_HASHKEY, 
+                    random_seed=0, debug=False, dialect='legacy', **kwargs):
     """
     Sample n rows of BQ table by 1) getting the results set size 2) querying with appropriate sample ratio
     - If n is None, just run the query without sampling
@@ -72,30 +78,33 @@ def sample_bq_table(query_raw, project_id, n=None, sample_rate=None, hash_key=SA
     """
     # Get row count to determine sampling rate
     query_sample = query_raw
-    if n or sample_rate:
-        if not sample_rate:
-            query_count = re.sub(r"^\s*SELECT\s+(.*?)\s+FROM",
-                                 "SELECT count(1) FROM", query_raw, re.M, re.DOTALL)
-            if debug:
-                print(query_count)
-            rowcount = pd.read_gbq(query_count, verbose=False,
-                                   project_id=project_id, **kwargs).iloc[0, 0]
+    if n:
+        query_count = re.sub(r"^\s*SELECT\s+(.*?)\s+FROM",
+                             "SELECT count(1) FROM", query_raw, re.M, re.DOTALL)
+        if debug:
+            print(query_count)
+        rowcount = pd.read_gbq(query_count, verbose=False,
+                               project_id=project_id, dialect=dialect, **kwargs).iloc[0, 0]
+        if rowcount > n * 2:
             sample_rate = int(rowcount / n)
-        if sample_rate or rowcount > n * 2:
-            if re.search(r"\sWHERE\s", query_raw):
-                where_clause = "AND"
-            else:
-                where_clause = "WHERE"
+    if sample_rate:
+        if re.search(r"\sWHERE\s", query_raw):
+            where_clause = "AND"
+        else:
+            where_clause = "WHERE"
+        if dialect == 'legacy':
             query_sample = query_raw + \
                 " {} ABS(HASH({})) % {} == {}".format(
+                    where_clause, hash_key, sample_rate, random_seed)
+        else:
+            query_sample = query_raw + \
+                " {} MOD(ABS(FARM_FINGERPRINT({})), {}) = {}".format(
                     where_clause, hash_key, sample_rate, random_seed)
     if debug:
         print(query_sample)
     # Run actual query with a sampling condition
     res = pd.read_gbq(query_sample, verbose=False,
-                      project_id=project_id, **kwargs)
-    if n and debug:
-        print("%d / %d = %d" % (rowcount, sample_rate, len(res)))
+                      project_id=project_id, dialect=dialect, **kwargs)
     return res
 
 
@@ -111,7 +120,7 @@ def convert_fig_to_html(fig, figsize=(5, 5)):
     return '<img src="data:image/png;base64,{}">'.format(urllib.parse.quote(data))
 
 
-def scatter_with_hover(df, x, y, hover_cols=None, marker="o", figsize=(300, 300), x_range=None, y_range=None, color=None, **kwargs):
+def scatter_with_hover(df, x, y, hover_cols=None, marker="o", figsize=(300, 300), x_range=None, y_range=None, color=None, title=None, color_scale='categorical', **kwargs):
     """
     Plots an interactive scatter plot of `x` vs `y` using bokeh, with automatic tooltips showing columns from `df`.
     Parameters
@@ -134,19 +143,25 @@ def scatter_with_hover(df, x, y, hover_cols=None, marker="o", figsize=(300, 300)
 
     if color:
         col_color = df[color].unique().tolist()
-        palette = d3['Category10'][min(max(len(col_color), 3), 10)]
-        # print(col_color, palette)
-        color_map = CategoricalColorMapper(factors=col_color,
-                                           palette=palette)
-        color_dict = {'field': color, 'transform': color_map}
+        if color_scale == 'categorical':
+            palette = d3['Category10'][min(max(len(col_color), 3), 10)]
+            color_map = CategoricalColorMapper(factors=col_color,
+                                               palette=palette)
+        elif color_scale == 'linear':
+            color_map = LinearColorMapper(palette=brewer['RdYlGn'][11], low=df[color].min(), high=df[color].max())
+        color_val = {'field': color, 'transform': color_map}
     else:
-        color_dict = 'black'
-
+        color_val = 'black'
+    r, r_pval = stats.pearsonr(df[x], df[y]); r_sig = "*" if r_pval <= 0.05 else ""
+    rho, rho_pval = stats.spearmanr(df[x], df[y]); rho_sig = "*" if rho_pval <= 0.05 else ""
+    if title == 'correlation':
+        title = 'Correlation (r:%.3f%s / rho:%.3f%s)' % (r, r_sig, rho, rho_sig)
+    else:
+        title = ""
     source = ColumnDataSource(data=df)
-    fig = figure(width=figsize[0], height=figsize[
-                 1], tools=['box_zoom', 'reset'])
+    fig = figure(width=figsize[0], height=figsize[1], title=title, tools=['box_zoom', 'reset', 'wheel_zoom'])
     fig.scatter(x, y, source=source, name='main', marker=marker,
-                color=color_dict, legend=color, **kwargs)
+                color=color_val, legend=color, **kwargs)
 
     if x_range:
         fig.x_range = Range1d(*x_range)
@@ -187,14 +202,17 @@ class RawTable:
         self.corr()
         self.pairplot(self.tbl.columns)
 
-    def groupby(self, by, gfilter=True, min_count=25):
+    def filter(self, query):
+        return RawTable(self.tbl.query(query))
+
+    def groupby(self, by, gfilter=None, min_count=25):
         """Return RawTable object for each row group"""
         for gname, gtbl in self.tbl.groupby(by):
             if len(gtbl) < min_count:
                 continue
             if gfilter and gname not in gfilter:
                 continue
-            display(HTML("<h3>%s: %s</h3>" % (str(by), gname)))
+            display(HTML("<h3>%s (n:%d)</h3>" % (str(gname), len(gtbl))))            
             yield RawTable(gtbl)
 
     def groupby_tbl(self, by, gfilter=None, min_count=25):
@@ -326,7 +344,8 @@ class RawTable:
                 p_input = p_input.sort_values(ascending=False)[0:max_bins]
             else:
                 p_input = p_input.sort_index()[0:max_bins]
-            ax = sns.barplot(p_input.values, p_input.index.values, ci=None)                
+            ax = sns.barplot(p_input.values, p_input.index.values, ci=None)
+            ax.set_title(col)
         else:
             if self.dtypes[col] == "int64" and self.ncounts[col] > 0:
                 p_input = stats.trimboth(pd.to_numeric(
@@ -339,9 +358,10 @@ class RawTable:
             edges_n = [np.round((edges[i] + edges[i + 1]) / 2, 1)
                        for i in range(len(edges) - 1)]
             ax = sns.barplot(x=edges_n, y=hist, ci=None, color="#E05F68")
+            ax.set_title(col + "\n(avg:%.2f p50:%.2f)" %
+                         (np.mean(self.tbl[col].dropna()), np.median(self.tbl[col].dropna())))
             # ax = sns.distplot(p_input, axlabel=col)
         ax.set_xticklabels(ax.get_xticklabels(), rotation=45)
-        ax.set_title(col)
         return convert_fig_to_html(ax.get_figure(), figsize)
 
     # COLUMN-PAIR ANALYSIS
@@ -359,6 +379,9 @@ class RawTable:
         display(ctbl.to_frame().transpose())
         ctbl.plot(kind='bar', figsize=(12, 4))
 
+    def is_empty(self, col):
+        return len(self.tbl[col].dropna()) == 0
+
     def pairplot(self, cols1=None, cols2=None, plot_lib=PLOT_LIB, **kwargs):
         """Pairplot for any data types"""
         if isinstance(cols1, str):
@@ -373,23 +396,25 @@ class RawTable:
         for c1 in cols1:
             row = []
             for i, c2 in enumerate(cols2):
-                if c1 == c2:
+                if self.is_empty(c1) or self.is_empty(c2):
+                    return None
+                elif c1 == c2:
                     row.append(self.print_summary(c1, 'hist', **kwargs))
                 else:
                     if self.dtypes[c1] != "object" and self.dtypes[c2] != "object":
                         fig = sns.regplot(
                             self.tbl[c1], self.tbl[c2]).get_figure()
                     elif self.dtypes[c1] == "object" and self.dtypes[c2] != "object":
-                        tbl_f = self.filter_rare_vals(self.tbl, c1)
-                        fig = sns.swarmplot(
+                        tbl_f = self.filter_topk_vals(self.tbl, c1)
+                        fig = sns.boxplot(
                             x=c2, y=c1, data=tbl_f, orient="h").get_figure()
                     elif self.dtypes[c1] != "object" and self.dtypes[c2] == "object":
-                        tbl_f = self.filter_rare_vals(self.tbl, c2)
-                        fig = sns.swarmplot(
+                        tbl_f = self.filter_topk_vals(self.tbl, c2)
+                        fig = sns.boxplot(
                             x=c2, y=c1, data=tbl_f).get_figure()
                     else:
-                        tbl_f = self.filter_rare_vals(
-                            self.filter_rare_vals(self.tbl, c2), c1)
+                        tbl_f = self.filter_topk_vals(
+                            self.filter_topk_vals(self.tbl, c2), c1)
                         fig = mosaic(
                             tbl_f, index=[c2, c1], title="{} vs. {}".format(c2, c1))[0]
                     row.append(convert_fig_to_html(fig, **kwargs))
@@ -408,7 +433,7 @@ class RawTable:
         for c1 in cols1:
             row = []
             for i, c2 in enumerate(cols2):
-                fig = scatter_with_hover(self.tbl, c1, c2, **kwargs)
+                fig = scatter_with_hover(self.tbl.dropna(subset=[c1,c2]), c1, c2, **kwargs)
                 script, div = components(fig)
                 row.append(script + div)
             rows.append(row)
@@ -424,14 +449,118 @@ class RawTable:
         sns.set(style="ticks")
         sns.pairplot(tbl_full)
 
-    def filter_rare_vals(self, tbl, col, min_n=10):
-        """Remove rare (n<=min_n) categorical values for plotting and etc."""
-        return tbl[tbl[col].isin(self.vcdict[col].loc[lambda x: x >= min_n].index)]
+    def filter_topk_vals(self, tbl, col, topk=5):
+        """Leave only top-k categorical values for plotting and etc."""
+        return tbl[tbl[col].isin(self.vcdict[col][0:topk].index)]
 
     def pivot_ui(self, outfile_path="./tmp.html", url_prefix=""):
         """Wrpper around pivottablejs"""
         from pivottablejs import pivot_ui
         return pivot_ui(self.tbl, outfile_path=outfile_path, url=(url_prefix + outfile_path))
+
+
+def agg_bq_table(facets, metrics, src_query, project_id, min_sample_size=0, verbose=False, **kwargs):
+    """Build a aggregate table for given facets and metrics
+    - metrics = [[def1, name1], ...]
+    """
+    metric_list = [[e, e] if type(e) == str else e for e in metrics]
+    sum_list = ["SUM({n}) AS {m}_sum".format(m=e[0], n=e[1])
+                for e in metric_list]
+    avg_list = ["AVG({n}) AS {m}_avg".format(m=e[0], n=e[1])
+                for e in metric_list]
+    ss_list = ["SUM(POW({n}, 2)) AS {m}_ssq".format(
+        m=e[0], n=e[1]) for e in metric_list]
+    # raw_list = ["{n} AS {m}_ua".format(m=e[0], n=e[1]) for e in metric_defs]
+    sql = """
+        SELECT 
+            {facet_list},
+            {sum_list},
+            {ss_list},
+            {avg_list},
+            count(*) AS sample_size
+          FROM ({src_query})
+          GROUP BY 
+            {facet_list}
+          HAVING 
+            sample_size >= {min_sample_size}
+          ORDER BY 
+            {facet_list}
+    """.format(
+        sum_list=",\n".join(sum_list),
+        avg_list=",\n".join(avg_list),
+        ss_list=",\n".join(ss_list),
+        facet_list=",\n".join(facets),
+        project_id=project_id,
+        src_query=src_query,
+        min_sample_size=min_sample_size)
+    if verbose:
+        print(sql)
+    smt = pd.read_gbq(sql, project_id=project_id, verbose=False, **kwargs)
+    return smt
+
+
+class AggTable:
+    """This class performs EDA (Exploratory Data Analysis) for aggregated data
+    """
+
+    def __init__(self, tbl, facets, metrics, col_sample_size="sample_size", do_agg=False):
+        """Calculate per-column stats"""
+        if do_agg:
+            self.tbl = tbl.groupby(facets, group_keys=True).apply(self.calc_agg_stats, metrics)
+        else:
+            self.tbl = tbl
+        self.facets = facets
+        self.metrics = metrics
+        self.col_sample_size = col_sample_size
+
+
+    def calc_agg_stats(self, tbl, metrics):
+        res = {'sample_size': len(tbl)}
+        for m in metrics:
+            res[m + '_avg'] = tbl[m].mean()
+            res[m + '_sum'] = tbl[m].sum()
+            res[m + '_ssq'] = tbl[m].apply(lambda e: e ** 2).sum()
+        return pd.Series(res)
+
+
+    def calc_ci(self, tbl, m, ci_thr=1.96):
+        sample_size = tbl[self.col_sample_size].sum()
+        avg = float(tbl[m + '_sum'].sum()) / sample_size
+        var = tbl[m + '_ssq'].sum() / sample_size - avg ** 2
+        ci = np.sqrt(var / sample_size) * ci_thr
+        return pd.Series({'sample_size': sample_size, (m + '_avg'): avg, (m + '_ci'): ci}, index=[m + '_avg', m + '_ci', 'sample_size'])
+
+
+    def plot(self, facets=None, metrics=None, output=('table', 'plot'), filters={}, **kwargs):
+        if 'kind' not in kwargs:
+            kwargs['kind'] = 'bar'
+        if not metrics:
+            metrics = self.metrics
+        if not facets:
+            facets = self.facets
+        metric_list = [e[0] if type(e) == list else e for e in metrics]
+        for m in metric_list:
+            # title(m)
+            ftbl = self.tbl.copy()
+            for k, v in filters.items():
+                ftbl = ftbl[ftbl[k].isin(v)]
+            atbl = ftbl.groupby(facets).apply(self.calc_ci, m)
+            if 'table' in output or 'table' == output:
+                display(atbl.round(3).style.bar(
+                    subset=[m + '_avg'], align='zero', color='#d65f5f').bar(
+                    subset=['sample_size'], align='left', color='#00ff00'))
+            if 'plot' in output or 'plot' == output:
+                if kwargs['kind'] == 'bar':
+                    ax = atbl[m + '_avg'].plot(yerr=atbl[m + '_ci'], **kwargs)
+                    ax.set_ylabel(m)
+                    plt.gca().invert_xaxis()
+                elif kwargs['kind'] == 'barh':
+                    ax = atbl[m + '_avg'].plot(xerr=atbl[m + '_ci'], **kwargs)
+                    plt.xlabel(m)
+                    plt.gca().invert_yaxis()
+                else:
+                    ax = atbl[m + '_avg'].plot(**kwargs)
+                plt.show()
 
 
 class ListTable(list):
