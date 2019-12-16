@@ -73,24 +73,27 @@ def add_category_dtype(df, colname, categories, ordered=True, c_suffix="_cat"):
 
 
 def add_numeric_dtype(df, colname, dtype="int"):
+    """Covert string column into numbers"""
     if dtype=="int":
         df[colname+"_int"] = df[colname].str.extract("(\d+)", expand=False).astype("float").round()
     elif dtype=="double":
         df[colname+"_dbl"] = df[colname].str.extract("([\d\.]+)", expand=False).astype("double")
 
 
-def get_unique_items_from_col(arg):
+def _get_unique_items_from_csv_col(arg):
+    """Create a list of unique values from a Series of CSV values"""
     return set(flatten_list([e.split(",") for e in arg.dropna().unique()]))
 
 
-def add_feature_group_from_col(df, colname, feature_list=None):
+def add_feature_group_from_csv_col(df, colname, feature_list=None):
+    """Covert string column with CSV values into ordered categories"""
     if not feature_list:
-        feature_list = get_unique_items_from_col(df[colname])
+        feature_list = _get_unique_items_from_csv_col(df[colname])
     for f in feature_list:
-        df[colname+"_"+re.sub(r'\W', "_", f)] = df[colname].str.contains(f)
+        df[colname+"_"+re.sub(r'\W', "_", f)] = df[colname].str.contains(f).astype(str)
 
 
-def get_category_from_from_ptn(arg, cat_def):
+def _get_category_from_from_ptn(arg, cat_def):
     try:
         for e in ensure_nested_list(cat_def):
             if re.search(e[0], arg):
@@ -101,8 +104,16 @@ def get_category_from_from_ptn(arg, cat_def):
 
 
 def add_category_dtype_from_ptn(df, colname, cat_def):
-    """Covert string column into ordered categories using the list of regex patterns"""
-    df[colname+"_cat"] = df[colname].apply(get_category_from_from_ptn, cat_def=cat_def)
+    """Covert string column into ordered categories using the list of regex patterns
+    Example:
+
+        job_cat_def = [
+            "Researcher",
+            ("Engineer|Developer", "Engineer")
+        ]
+
+    """
+    df[colname+"_cat"] = df[colname].apply(_get_category_from_from_ptn, cat_def=cat_def)
     add_category_dtype(df, colname+"_cat", [e[1] for e in ensure_nested_list(cat_def)], c_suffix="")
 
 
@@ -283,7 +294,7 @@ class EDATable:
         rows = []
         target_cols = [c for c in cols if self.dtypes[
             c] not in ["datetime64[ns]", "object"]]
-        # print(target_cols)
+
         for i, c in enumerate(target_cols):
             tbl_o = self.tbl[
                 (np.abs(self.tbl[c] - self.tbl[c].mean()) > (std_thr * self.tbl[c].std()))]
