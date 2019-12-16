@@ -120,7 +120,8 @@ def convert_fig_to_html(fig, figsize=(5, 5)):
     return '<img src="data:image/png;base64,{}">'.format(urllib.parse.quote(data))
 
 
-def scatter_with_hover(df, x, y, hover_cols=None, marker="o", figsize=(300, 300), x_range=None, y_range=None, color=None, title=None, color_scale='categorical', **kwargs):
+def scatter_with_hover(df, x, y, hover_cols=None, marker="o", color=None, color_scale='categorical', 
+                    title=None, figsize=(300, 300), x_range=None, y_range=None, **kwargs):
     """
     Plots an interactive scatter plot of `x` vs `y` using bokeh, with automatic tooltips showing columns from `df`.
     Parameters
@@ -137,6 +138,10 @@ def scatter_with_hover(df, x, y, hover_cols=None, marker="o", figsize=(300, 300)
         range (min_value, max_value) of the x axis
     marker : str
         Name of marker to use for scatter plot
+    color : str
+        Columns to be mapped into color value
+    color_scale: str
+        'categorical' vs 'linear' color scale
     **kwargs
         Any further arguments to be passed to fig.scatter
     """
@@ -215,7 +220,7 @@ class RawTable:
             display(HTML("<h3>%s (n:%d)</h3>" % (str(gname), len(gtbl))))            
             yield RawTable(gtbl)
 
-    def groupby_tbl(self, by, gfilter=None, min_count=25):
+    def groupby_tbl(self, by, min_count=25):
         """Generate RawTable object for each row group"""
         rows = [[], []]
         for gname, gtbl in self.tbl.groupby(by):
@@ -338,7 +343,8 @@ class RawTable:
     def print_seaborn_hist(self, col, figsize=(5, 5), font_scale=1.2, max_bins=20, proportiontocut=0, sort_values=True):
         """ Print the histogram of a column using Seaborn """
         sns.set(font_scale=font_scale)
-        if self.dtypes[col] == "object":
+        if self.dtypes[col] == "object" or self.dtypes[col] == "category":
+            print("[print_seaborn_hist]")
             p_input = self.tbl[col].dropna().value_counts()
             if sort_values:
                 p_input = p_input.sort_values(ascending=False)[0:max_bins]

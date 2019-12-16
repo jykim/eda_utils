@@ -91,7 +91,7 @@ def run_export_notebook(nb_file, params=None, skip_run=False, allow_errors=True,
                 "%s\nimport json\nPAR.update(json.loads('%s'))" % \
                 (nb['cells'][get_first_codecell(nb)]['source'], json.dumps(params))
         try:
-            ep = ExecutePreprocessor(timeout=timeout, allow_errors=allow_errors, kernel_name='python2')
+            ep = ExecutePreprocessor(timeout=timeout, allow_errors=allow_errors, kernel_name='python3')
             ep.preprocess(nb, {'metadata': {'path': '.'}})
         except CellExecutionError as e:
             print('Error executing the notebook "%s".\n\n%s' % (nb_file, str(e)))
