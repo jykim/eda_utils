@@ -11,6 +11,7 @@ For users:
 For developers:
 
 > $ git clone https://github.com/jykim/edatools.git
+
 > $ pip install -e edatools
 
 ## Usage
