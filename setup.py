@@ -5,7 +5,7 @@ from setuptools import setup
 #         return f.read()
 
 setup(name='edatools',
-      version='0.0.6',
+      version='0.0.7',
       description='Exploratory Data Analysis Toolkit',
       # long_description=readme(),
       classifiers=[
