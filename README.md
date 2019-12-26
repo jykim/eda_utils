@@ -5,12 +5,14 @@ A set of tools to facilitate (and even automate) EDA in Python.
 ## Installing
 
 For users:
-  $ pip install -U edatools
+
+> $ pip install -U edatools
 
 For developers:
 
-  $ git clone https://github.com/jykim/edatools.git
-  $ pip install -e edatools
+> $ git clone https://github.com/jykim/edatools.git
+
+> $ pip install -e edatools
 
 ## Usage
 
