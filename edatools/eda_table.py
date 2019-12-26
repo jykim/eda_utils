@@ -6,7 +6,6 @@ distributions for any subset of columns, or relationships btw. pairs of columns.
 - Currently support both Seaborn and Bokeh (Bokeh support might discontinue)
 """
 import base64
-import bokeh
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -22,13 +21,8 @@ from six.moves import urllib
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from statsmodels.graphics.mosaicplot import mosaic
 from IPython.display import display, HTML, Image
-
-from bokeh.palettes import d3, brewer
-from bokeh.io import show, output_notebook
-from bokeh.plotting import figure, ColumnDataSource
-from bokeh.models import HoverTool, Range1d, CategoricalColorMapper, LinearColorMapper
-from bokeh.models.glyphs import VBar
 from bokeh.embed import components
+
 from math import pi
 try:
     from itertools import zip_longest as zip_longest
@@ -129,89 +123,6 @@ def convert_fig_to_html(fig, figsize=(5, 5)):
     return '<img src="data:image/png;base64,{}">'.format(urllib.parse.quote(data))
 
 
-def load_bokeh():
-    """Initialize Bokeh JS for notebook display"""
-    output_notebook(verbose=False, hide_banner=True)
-    res = """
-        <link
-            href="http://cdn.pydata.org/bokeh/release/bokeh-{version}.min.css"
-            rel="stylesheet" type="text/css">
-        <script src="http://cdn.pydata.org/bokeh/release/bokeh-{version}.min.js"></script>
-        """
-    BOKEH_LOADED = True
-    display(HTML(res.format(version=bokeh.__version__)))
-
-
-def scatter_with_hover(df, x, y, hover_cols=None, marker="o", color=None, color_scale='categorical',
-                       title=None, figsize=(300, 300), x_range=None, y_range=None, **kwargs):
-    """
-    Plots an interactive scatter plot of `x` vs `y` using bokeh, with automatic tooltips showing columns from `df`.
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        DataFrame containing the data to be plotted
-    x : str
-        Name of the column to use for the x-axis values
-    y : str
-        Name of the column to use for the y-axis values
-    hover_cols : list of str
-        Columns to show in the hover tooltip (default is to show all)
-    x_range : tuble of size 2
-        range (min_value, max_value) of the x axis
-    marker : str
-        Name of marker to use for scatter plot
-    color : str
-        Columns to be mapped into color value
-    color_scale: str
-        'categorical' vs 'linear' color scale
-    **kwargs
-        Any further arguments to be passed to fig.scatter
-    """
-
-    if color:
-        col_color = df[color].unique().tolist()
-        if color_scale == 'categorical':
-            palette = d3['Category10'][min(max(len(col_color), 3), 10)]
-            color_map = CategoricalColorMapper(factors=col_color,
-                                               palette=palette)
-        elif color_scale == 'linear':
-            color_map = LinearColorMapper(palette=brewer['RdYlGn'][11], low=df[
-                                          color].min(), high=df[color].max())
-        color_val = {'field': color, 'transform': color_map}
-    else:
-        color_val = 'black'
-    r, r_pval = stats.pearsonr(df[x], df[y])
-    r_sig = "*" if r_pval <= 0.05 else ""
-    rho, rho_pval = stats.spearmanr(df[x], df[y])
-    rho_sig = "*" if rho_pval <= 0.05 else ""
-    if title == 'correlation':
-        title = 'Correlation (r:%.3f%s / rho:%.3f%s)' % (r,
-                                                         r_sig, rho, rho_sig)
-    else:
-        title = ""
-    source = ColumnDataSource(data=df)
-    fig = figure(width=figsize[0], height=figsize[1], title=title, tools=[
-                 'box_zoom', 'reset', 'wheel_zoom'])
-    fig.scatter(x, y, source=source, name='main', marker=marker,
-                color=color_val, legend_label=color, **kwargs)
-
-    if x_range:
-        fig.x_range = Range1d(*x_range)
-    if y_range:
-        fig.y_range = Range1d(*y_range)
-
-    hover = HoverTool(names=['main'])
-    if hover_cols is None:
-        hover.tooltips = [(c, '@' + c) for c in df.columns]
-    else:
-        hover.tooltips = [(c, '@' + c) for c in hover_cols]
-    fig.add_tools(hover)
-
-    fig.yaxis.axis_label = y
-    fig.xaxis.axis_label = x
-    return fig
-
-
 class EDATable:
     """This class performs EDA (Exploratory Data Analysis) for (sampled) data
     """
@@ -282,7 +193,7 @@ class EDATable:
                 else:
                     row.append(self.print_summary(c, 'hist', **kwargs))
             rows.append(row)
-        display(HTML(ListTable(rows)._repr_html_("border:0")))
+        display(HTML(edu.ListTable(rows)._repr_html_("border:0")))
 
     def outliers(self, cols=None, col_ptn=None, n_row=10, std_thr=5, show_all_cols=False, **kwargs):
         """ Show outliers for each column in table
@@ -324,7 +235,7 @@ class EDATable:
                 row.append(self.print_summary(c, e, **kwargs))
             rows.append(row)
         if return_html:
-            display(HTML(ListTable(rows)._repr_html_("border:0")))
+            display(HTML(edu.ListTable(rows)._repr_html_("border:0")))
         else:
             return rows
 
@@ -471,12 +382,12 @@ class EDATable:
                             tbl_f, index=[c2, c1], title="{} vs. {}".format(c2, c1))[0]
                     row.append(convert_fig_to_html(fig, figsize=figsize))
             rows.append(row)
-        display(HTML(ListTable(rows)._repr_html_("border:0")))
+        display(HTML(edu.ListTable(rows)._repr_html_("border:0")))
 
     def pairplot_scatter_with_hover(self, cols1, cols2, **kwargs):
         """Group of scatterplot with hover & coloring (using bokeh)"""
         if not BOKEH_LOADED:
-            load_bokeh()
+            edu.load_bokeh()
         if isinstance(cols1, str):
             cols1 = [cols1]
         if isinstance(cols2, str):
@@ -485,12 +396,12 @@ class EDATable:
         for c1 in cols1:
             row = []
             for i, c2 in enumerate(cols2):
-                fig = scatter_with_hover(self.tbl.dropna(
+                fig = edu.scatter_with_hover(self.tbl.dropna(
                     subset=[c1, c2]), c1, c2, **kwargs)
                 script, div = components(fig)
                 row.append(script + div)
             rows.append(row)
-        display(HTML(ListTable(rows)._repr_html_("border:0")))
+        display(HTML(edu.ListTable(rows)._repr_html_("border:0")))
 
     def pairplot_scatter(self, cols=None):
         """Pairplot for any numeric data types (using seaborn)"""
@@ -502,40 +413,27 @@ class EDATable:
         sns.set(style="ticks")
         sns.pairplot(tbl_full)
 
+    def get_topk_vals(self, col, k, ascending=True):
+        """Get top-k values by count or coverage (% of rows covered)"""
+        if k < 1:
+            c_sum = 0; i = 0
+            total = len(self.tbl)
+            for v,c in self.vcdict[col].items():
+                c_sum += c; i += 1
+                if c_sum / total:
+                    k = i
+                    break
+        if ascending:
+            return self.vcdict[col][0:k].index
+        else:
+            return self.vcdict[col][k:].index
+
     def filter_topk_vals(self, tbl, col, topk=5):
         """Leave only top-k categorical values for plotting and etc."""
-        return tbl[tbl[col].isin(self.vcdict[col][0:topk].index)]
+        return tbl[tbl[col].isin(self.get_topk_vals(col, topk))]
 
-    def pivot_ui(self, outfile_path="./tmp.html", url_prefix=""):
-        """Wrpper around pivottablejs"""
-        from pivottablejs import pivot_ui
-        return pivot_ui(self.tbl, outfile_path=outfile_path, url=(url_prefix + outfile_path))
+    # def pivot_ui(self, outfile_path="./tmp.html", url_prefix=""):
+    #     """Wrpper around pivottablejs"""
+    #     from pivottablejs import pivot_ui
+    #     return pivot_ui(self.tbl, outfile_path=outfile_path, url=(url_prefix + outfile_path))
 
-
-class ListTable(list):
-    """ Overridden list class which takes a 2-dimensional list of
-        the form [[1,2,3],[4,5,6]], and renders an HTML Table in
-        IPython Notebook.
-    """
-
-    def transpose(self):
-        return ListTable(map(list, zip(*self)))
-
-    def print_cell(self, arg):
-        if arg:
-            return arg
-        else:
-            return ""
-
-    def _repr_html_(self, style=""):
-        html = ["<table style='%s'>" % style]
-        for row in self:
-            html.append("<tr style='%s'>" % style)
-
-            for col in row:
-                html.append(
-                    "<td style='{}'>{}</td>".format(style, self.print_cell(col)))
-
-            html.append("</tr>")
-        html.append("</table>")
-        return ''.join(html)

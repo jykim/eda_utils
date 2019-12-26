@@ -7,6 +7,13 @@ from scipy.stats import norm
 from IPython.display import display, HTML, Image
 import plotly.graph_objects as go
 
+import bokeh
+from bokeh.palettes import d3, brewer
+from bokeh.io import show, output_notebook
+from bokeh.plotting import figure, ColumnDataSource
+from bokeh.models import HoverTool, Range1d, CategoricalColorMapper, LinearColorMapper
+from bokeh.models.glyphs import VBar
+
 def print_title(title, tag='h3'):
     display(HTML("<%s>%s</%s>" % (tag, title, tag)))
     
@@ -155,3 +162,115 @@ def plot_page_transition(tbl, node_count=10, min_transition_count=10000, width=1
 
     fig.update_layout(title_text=title, width=width, height=height, font_size=10)
     fig.show()
+
+
+def load_bokeh():
+    """Initialize Bokeh JS for notebook display"""
+    output_notebook(verbose=False, hide_banner=True)
+    res = """
+        <link
+            href="http://cdn.pydata.org/bokeh/release/bokeh-{version}.min.css"
+            rel="stylesheet" type="text/css">
+        <script src="http://cdn.pydata.org/bokeh/release/bokeh-{version}.min.js"></script>
+        """
+    BOKEH_LOADED = True
+    display(HTML(res.format(version=bokeh.__version__)))
+
+
+def scatter_with_hover(df, x, y, hover_cols=None, marker="o", color=None, color_scale='categorical',
+                       title=None, figsize=(300, 300), x_range=None, y_range=None, **kwargs):
+    """
+    Plots an interactive scatter plot of `x` vs `y` using bokeh, with automatic tooltips showing columns from `df`.
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        DataFrame containing the data to be plotted
+    x : str
+        Name of the column to use for the x-axis values
+    y : str
+        Name of the column to use for the y-axis values
+    hover_cols : list of str
+        Columns to show in the hover tooltip (default is to show all)
+    x_range : tuble of size 2
+        range (min_value, max_value) of the x axis
+    marker : str
+        Name of marker to use for scatter plot
+    color : str
+        Columns to be mapped into color value
+    color_scale: str
+        'categorical' vs 'linear' color scale
+    **kwargs
+        Any further arguments to be passed to fig.scatter
+    """
+
+    if color:
+        col_color = df[color].unique().tolist()
+        if color_scale == 'categorical':
+            palette = d3['Category10'][min(max(len(col_color), 3), 10)]
+            color_map = CategoricalColorMapper(factors=col_color,
+                                               palette=palette)
+        elif color_scale == 'linear':
+            color_map = LinearColorMapper(palette=brewer['RdYlGn'][11], low=df[
+                                          color].min(), high=df[color].max())
+        color_val = {'field': color, 'transform': color_map}
+    else:
+        color_val = 'black'
+    r, r_pval = stats.pearsonr(df[x], df[y])
+    r_sig = "*" if r_pval <= 0.05 else ""
+    rho, rho_pval = stats.spearmanr(df[x], df[y])
+    rho_sig = "*" if rho_pval <= 0.05 else ""
+    if title == 'correlation':
+        title = 'Correlation (r:%.3f%s / rho:%.3f%s)' % (r,
+                                                         r_sig, rho, rho_sig)
+    else:
+        title = ""
+    source = ColumnDataSource(data=df)
+    fig = figure(width=figsize[0], height=figsize[1], title=title, tools=[
+                 'box_zoom', 'reset', 'wheel_zoom'])
+    fig.scatter(x, y, source=source, name='main', marker=marker,
+                color=color_val, legend_label=color, **kwargs)
+
+    if x_range:
+        fig.x_range = Range1d(*x_range)
+    if y_range:
+        fig.y_range = Range1d(*y_range)
+
+    hover = HoverTool(names=['main'])
+    if hover_cols is None:
+        hover.tooltips = [(c, '@' + c) for c in df.columns]
+    else:
+        hover.tooltips = [(c, '@' + c) for c in hover_cols]
+    fig.add_tools(hover)
+
+    fig.yaxis.axis_label = y
+    fig.xaxis.axis_label = x
+    return fig
+
+
+class ListTable(list):
+    """ Overridden list class which takes a 2-dimensional list of
+        the form [[1,2,3],[4,5,6]], and renders an HTML Table in
+        IPython Notebook.
+    """
+
+    def transpose(self):
+        return ListTable(map(list, zip(*self)))
+
+    def print_cell(self, arg):
+        if arg:
+            return arg
+        else:
+            return ""
+
+    def _repr_html_(self, style=""):
+        html = ["<table style='%s'>" % style]
+        for row in self:
+            html.append("<tr style='%s'>" % style)
+
+            for col in row:
+                html.append(
+                    "<td style='{}'>{}</td>".format(style, self.print_cell(col)))
+
+            html.append("</tr>")
+        html.append("</table>")
+        return ''.join(html)
