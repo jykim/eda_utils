@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from collections import OrderedDict
+from copy import deepcopy
 
 from sklearn.metrics import roc_auc_score
 from sklearn.metrics import accuracy_score
@@ -10,13 +11,24 @@ from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import cross_val_score, cross_val_predict, learning_curve
 from sklearn.inspection import plot_partial_dependence
 
-# from edatools.eda_table import EDATable
-# from edatools.ml_table import MLTable
-
 from sklearn.preprocessing import LabelEncoder, OrdinalEncoder, OneHotEncoder, StandardScaler, MinMaxScaler
 from sklearn.model_selection import train_test_split
 
 from edatools.eda_table import EDATable
+
+from collections import Counter
+from imblearn.under_sampling import RandomUnderSampler
+import impyute as impy
+
+def split_feature_labels(tbl, c_label):
+    y = tbl[c_label].copy()
+    X = tbl.drop([c_label], axis=1).copy()
+    return (X, y)
+
+
+def merge_feature_labels(X, y, c_label):
+    X[c_label] = y
+    return X
 
 
 class MLTable(EDATable):
@@ -31,7 +43,8 @@ class MLTable(EDATable):
         return {
             "tbl_name":self.name,
             "features":len(self.tbl.columns),
-            "rows":len(self.tbl)
+            "train_set":len(self.train),
+            "test_set":len(self.test),
             }
 
     def normalize(self, topk=3, methods={}):
@@ -45,7 +58,7 @@ class MLTable(EDATable):
         self.tbl_n = pd.concat(res, axis=1)
         return self.tbl_n
 
-    def encode(self, cols=None, col_ptn=None):
+    def encode(self, cols=None, col_ptn=None, impute=None):
         if col_ptn:
             cols = [c for c in self.cols if re.search(col_ptn, c)]
         elif not cols:
@@ -61,12 +74,18 @@ class MLTable(EDATable):
                 res.append(tbl[c])                
             elif self.dtypes[c] == 'category':
                 categories = tbl[c].cat.categories
-                res.append(tbl[c].astype(str).replace(categories, list(range(len(categories)))))
+                res.append(tbl[c].astype(str).replace(categories, list(range(len(categories)))).astype(str))
             elif self.dtypes[c] == 'object':
                 res.append(pd.get_dummies(tbl[c], prefix=c))
             else:
                 res.append(tbl[c])
-        self.tbl_e = pd.concat(res, axis=1).fillna(0)
+        res_df = pd.concat(res, axis=1).astype(float)
+        if impute=='mean':
+            self.tbl_e = pd.DataFrame(impy.mean(res_df.values), columns=res_df.columns)
+        elif impute=='knn':
+            self.tbl_e = pd.DataFrame(impy.fast_knn(res_df.values, k=3), columns=res_df.columns)
+        else: # no imputation
+            self.tbl_e = res_df
         return self.tbl_e
 
     def split(self, test_size=0.2, random_state=None):
@@ -78,6 +97,17 @@ class MLTable(EDATable):
         self.train, self.test = train_test_split(tbl, test_size=test_size, random_state=random_state)
         print('Train Shape:', self.train.shape)
         print('Test Shape:', self.test.shape)
+
+    def balance_train(self, random_state=None):
+        if not hasattr(self, "train"):
+            print("Split data first...")
+            return
+
+        rus = RandomUnderSampler(random_state=random_state)
+        self.train = merge_feature_labels(*rus.fit_resample(*split_feature_labels(self.train, self.c_label)), self.c_label)
+        print('Train Shape:', self.train.shape)
+        return self.train
+
 
 class MLModel:
     """This class abstract various ML models
@@ -128,27 +158,28 @@ class MLBench:
     """This class performs supervised learning for given set of data
     """
     def __init__(self):
-        self.models = OrderedDict()
         self.tables = OrderedDict()
-
-    def add_model(self, mdl):
-        self.models[mdl.name] = mdl
+        self.models = OrderedDict()
+        self.fit_models = OrderedDict()
 
     def add_table(self, tbl):
         self.tables[tbl.name] = tbl
 
+    def add_model(self, mdl):
+        self.models[mdl.name] = mdl
+
     def train_batch(self):
         for tn, tbl in self.tables.items():
             for mn, mdl in self.models.items():
-                mdl.train(*split_feature_labels(tbl.train, tbl.c_label))
+                self.fit_models[(tn, mn)] = deepcopy(mdl)
+                self.fit_models[(tn, mn)].train(*split_feature_labels(tbl.train, tbl.c_label))
 
     def evaluate_batch(self):
         res = []
         for tn, tbl in self.tables.items():
             for mn, mdl in self.models.items():
                 eval_res = tbl.get_info()
-                eval_res.update(mdl.evaluate(*split_feature_labels(tbl.test, tbl.c_label)))
-                # print(eval_res)
+                eval_res.update(self.fit_models[(tn, mn)].evaluate(*split_feature_labels(tbl.test, tbl.c_label)))
                 res.append(eval_res)
         return pd.DataFrame(res)
 
@@ -162,16 +193,15 @@ class MLBench:
             for i in feature_range:
                 fig, axes = plt.subplots(1, len(self.models), figsize=(5*len(self.models), 3), sharey=True)
                 for j, (mn, mdl) in enumerate(self.models.items()):
-                    axes[j].set_title("PDP for %s" % mdl.name)
-                    plot_partial_dependence(mdl.model, X , [i], ax=axes[j])
+                    axes[j].set_title("PDP for %s using %s" % (mdl.name, tbl.name))
+                    plot_partial_dependence(self.fit_models[(tn, mn)].model, X , [i], ax=axes[j])
 
     def plot_learning_curve(self):
         for tn, tbl in self.tables.items():
             fig, axes = plt.subplots(1, len(self.models), figsize=(5*len(self.models), 4), sharey=False)
             for j, (mn, mdl) in enumerate(self.models.items()):
-                axes[j].set_title("Learning Curve for %s" % mdl.name)
+                axes[j].set_title("Learning Curve for %s using %s" % (mdl.name, tbl.name))
                 train_sizes = [int(float(len(tbl.train)) * i/10) for i  in range(1, 9)]
-                # print(train_sizes)
                 _, train_scores, test_scores = \
                     learning_curve(mdl.model, *split_feature_labels(tbl.train, tbl.c_label), train_sizes=train_sizes)
                 train_scores_mean = np.mean(train_scores, axis=1)
@@ -181,11 +211,6 @@ class MLBench:
                 axes[j].plot(train_sizes, test_scores_mean, 'o-', color="g",
                              label="Cross-validation score")
                 axes[j].legend(loc="best")
-
-def split_feature_labels(tbl, c_label):
-    y = tbl[c_label].copy()
-    X = tbl.drop([c_label], axis=1).copy()
-    return (X, y)
 
 
 def do_cv(predictor, X, y, cv=5):

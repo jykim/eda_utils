@@ -20,7 +20,7 @@ setup(name='edatools',
       license='MIT',
       packages=['edatools'],
       install_requires=[
-          'numpy', 'pandas', 'bokeh', 'scipy', 'seaborn'
+          'numpy', 'pandas', 'bokeh', 'scipy', 'seaborn', 'sklearn', 'imblearn', 'impyute'
       ],
       include_package_data=True,
       zip_safe=False)
