@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import re
 import seaborn as sns
 import scipy.stats as stats
-import edatools.eda_display_utils as edu
+import e3tools.eda_display_utils as edu
 from pandas.api.types import CategoricalDtype
 
 from io import BytesIO

@@ -3,7 +3,7 @@ import sqlparse
 import banjo.utils.gbq as gbq
 import pandas as pd
 SAMPLING_HASHKEY = "session_id"
-import edatools.eda_display_utils as edu
+import e3tools.eda_display_utils as edu
 
 
 def print_sql(sql):

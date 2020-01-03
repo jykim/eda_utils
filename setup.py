@@ -4,9 +4,9 @@ from setuptools import setup
 #     with open('README.md') as f:
 #         return f.read()
 
-setup(name='edatools',
-      version='0.0.7',
-      description='Exploratory Data Analysis Toolkit',
+setup(name='e3tools',
+      version='0.0.1',
+      description='Data Science Toolkit from E3Data',
       # long_description=readme(),
       classifiers=[
         'Development Status :: 3 - Alpha',
@@ -14,11 +14,11 @@ setup(name='edatools',
         'Programming Language :: Python :: 2.7',
       ],
       keywords='Exploratory Data Analysis',
-      url='https://github.com/jykim/edatools',
+      url='https://github.com/jykim/e3tools',
       author='Jin Young Kim',
       author_email='lifidea@gmail.com',
       license='MIT',
-      packages=['edatools'],
+      packages=['e3tools'],
       install_requires=[
           'numpy', 'pandas', 'bokeh', 'scipy', 'seaborn', 'sklearn', 'imblearn', 'impyute'
       ],

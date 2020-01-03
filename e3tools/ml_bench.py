@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from collections import OrderedDict
+from collections import OrderedDict, Counter
 from copy import deepcopy
 
 from sklearn.metrics import roc_auc_score
@@ -14,9 +14,8 @@ from sklearn.inspection import plot_partial_dependence
 from sklearn.preprocessing import LabelEncoder, OrdinalEncoder, OneHotEncoder, StandardScaler, MinMaxScaler
 from sklearn.model_selection import train_test_split
 
-from edatools.eda_table import EDATable
+from e3tools.eda_table import EDATable
 
-from collections import Counter
 from imblearn.under_sampling import RandomUnderSampler
 import impyute as impy
 
@@ -202,8 +201,10 @@ class MLBench:
             for j, (mn, mdl) in enumerate(self.models.items()):
                 axes[j].set_title("Learning Curve for %s using %s" % (mdl.name, tbl.name))
                 train_sizes = [int(float(len(tbl.train)) * i/10) for i  in range(1, 9)]
+                # print(tbl.train[tbl.c_label].value_counts())
                 _, train_scores, test_scores = \
-                    learning_curve(mdl.model, *split_feature_labels(tbl.train, tbl.c_label), train_sizes=train_sizes)
+                    learning_curve(mdl.model, *split_feature_labels(tbl.train, tbl.c_label), 
+                        train_sizes=train_sizes)
                 train_scores_mean = np.mean(train_scores, axis=1)
                 test_scores_mean = np.mean(test_scores, axis=1)
                 axes[j].plot(train_sizes, train_scores_mean, 'o-', color="r",
