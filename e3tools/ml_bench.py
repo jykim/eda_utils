@@ -1,22 +1,17 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from collections import OrderedDict, Counter
-from copy import deepcopy
 
-from sklearn.metrics import roc_auc_score
-from sklearn.metrics import accuracy_score
-from sklearn.metrics import confusion_matrix
-
-from sklearn.model_selection import cross_val_score, cross_val_predict, learning_curve
-from sklearn.inspection import plot_partial_dependence
-
+from sklearn.model_selection import cross_val_score, cross_val_predict, learning_curve, train_test_split
 from sklearn.preprocessing import LabelEncoder, OrdinalEncoder, OneHotEncoder, StandardScaler, MinMaxScaler
-from sklearn.model_selection import train_test_split
+from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix
+from sklearn.inspection import plot_partial_dependence
 
 from e3tools.eda_table import EDATable
 
+from collections import OrderedDict, Counter
 from imblearn.under_sampling import RandomUnderSampler
+from copy import deepcopy
 import impyute as impy
 
 def split_feature_labels(tbl, c_label):
@@ -41,7 +36,8 @@ class MLTable(EDATable):
     def get_info(self):
         return {
             "tbl_name":self.name,
-            "features":len(self.tbl.columns),
+            "raw_features":len(self.tbl.columns),
+            "encoded_features":len(self.tbl_e.columns),
             "train_set":len(self.train),
             "test_set":len(self.test),
             }
@@ -173,6 +169,16 @@ class MLBench:
                 self.fit_models[(tn, mn)] = deepcopy(mdl)
                 self.fit_models[(tn, mn)].train(*split_feature_labels(tbl.train, tbl.c_label))
 
+    def cross_validate_batch(self, scoring='roc_auc', nfolds=5):
+        res = []
+        for tn, tbl in self.tables.items():
+            for mn, mdl in self.models.items():
+                eval_res = tbl.get_info()
+                cv_score = cross_val_score(mdl.model, *split_feature_labels(tbl.train, tbl.c_label), scoring=scoring, cv=nfolds)
+                eval_res.update({"model_name":mn, ("cv_"+scoring):cv_score.mean()})
+                res.append(eval_res)
+        return pd.DataFrame(res)
+
     def evaluate_batch(self):
         res = []
         for tn, tbl in self.tables.items():
@@ -192,19 +198,18 @@ class MLBench:
             for i in feature_range:
                 fig, axes = plt.subplots(1, len(self.models), figsize=(5*len(self.models), 3), sharey=True)
                 for j, (mn, mdl) in enumerate(self.models.items()):
-                    axes[j].set_title("PDP for %s using %s" % (mdl.name, tbl.name))
+                    axes[j].set_title("PDP for %s \non %s" % (mdl.name, tbl.name))
                     plot_partial_dependence(self.fit_models[(tn, mn)].model, X , [i], ax=axes[j])
 
-    def plot_learning_curve(self):
+    def plot_learning_curve(self, random_state=None):
         for tn, tbl in self.tables.items():
             fig, axes = plt.subplots(1, len(self.models), figsize=(5*len(self.models), 4), sharey=False)
             for j, (mn, mdl) in enumerate(self.models.items()):
-                axes[j].set_title("Learning Curve for %s using %s" % (mdl.name, tbl.name))
+                axes[j].set_title("Learning Curve for %s \non %s" % (mdl.name, tbl.name))
                 train_sizes = [int(float(len(tbl.train)) * i/10) for i  in range(1, 9)]
-                # print(tbl.train[tbl.c_label].value_counts())
                 _, train_scores, test_scores = \
                     learning_curve(mdl.model, *split_feature_labels(tbl.train, tbl.c_label), 
-                        train_sizes=train_sizes)
+                        train_sizes=train_sizes, random_state=random_state)
                 train_scores_mean = np.mean(train_scores, axis=1)
                 test_scores_mean = np.mean(test_scores, axis=1)
                 axes[j].plot(train_sizes, train_scores_mean, 'o-', color="r",
@@ -212,28 +217,3 @@ class MLBench:
                 axes[j].plot(train_sizes, test_scores_mean, 'o-', color="g",
                              label="Cross-validation score")
                 axes[j].legend(loc="best")
-
-
-def do_cv(predictor, X, y, cv=5):
-    """
-    Executes cross validation and display scores
-    """
-    print('### -- ### -- ' + str(type(predictor)).split('.')[-1][:-2] + ' -- ### -- ###')
-    cv_score = cross_val_score(predictor, X, y, scoring='roc_auc', cv=cv)
-    print ('Mean AUC score after a 5-fold cross validation: ', cv_score.mean())
-    print ('AUC score of each fold: ', cv_score)
-    return cross_val_predict(predictor, X, y, cv=cv, method='predict_proba')
-
-
-def chunks(lst, n):
-    """Yield successive n-sized chunks from lst.
-    """
-    for i in range(0, len(lst), n):
-        yield lst[i:i + n]
-
-
-def plot_pdp(ftbl, model, n_cols=5):
-    for l in chunks(range(len(ftbl.columns)), n_cols):
-        fig, ax = plt.subplots(figsize=(15, 3))
-        plot_partial_dependence(model, ftbl, l, n_cols=n_cols, ax=ax)
-
