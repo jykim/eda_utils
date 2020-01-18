@@ -432,8 +432,3 @@ class EDATable:
         """Leave only top-k categorical values for plotting and etc."""
         return tbl[tbl[col].isin(self.get_topk_vals(col, topk))]
 
-    # def pivot_ui(self, outfile_path="./tmp.html", url_prefix=""):
-    #     """Wrpper around pivottablejs"""
-    #     from pivottablejs import pivot_ui
-    #     return pivot_ui(self.tbl, outfile_path=outfile_path, url=(url_prefix + outfile_path))
-

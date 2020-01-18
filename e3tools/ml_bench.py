@@ -27,6 +27,7 @@ def merge_feature_labels(X, y, c_label):
 
 class MLTable(EDATable):
     """This class prepare data for supervised learning
+    - Note that the data type for c_label should be binary
     """
     def __init__(self, tbl, c_label, name='Default'):
         super(MLTable, self).__init__(tbl)

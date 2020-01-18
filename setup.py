@@ -5,7 +5,7 @@ from setuptools import setup
 #         return f.read()
 
 setup(name='e3tools',
-      version='0.0.1',
+      version='0.0.2',
       description='Data Science Toolkit from E3Data',
       # long_description=readme(),
       classifiers=[
