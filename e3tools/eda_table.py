@@ -123,6 +123,16 @@ def convert_fig_to_html(fig, figsize=(5, 5)):
     return '<img src="data:image/png;base64,{}">'.format(urllib.parse.quote(data))
 
 
+def convert_plotly_fig_to_html(fig, width=450, height=350):
+    """ Convert Plotly figure 'fig' into a <img> tag for HTML use using base64 encoding. """
+
+    # png_output = BytesIO()
+    # canvas = FigureCanvas()
+    # canvas.print_png()
+    data = base64.b64encode(fig.to_image(format='png', width=width, height=height))
+    return '<img src="data:image/png;base64,{}">'.format(urllib.parse.quote(data))
+
+
 class EDATable:
     """This class performs EDA (Exploratory Data Analysis) for (sampled) data
     """
@@ -386,8 +396,7 @@ class EDATable:
 
     def pairplot_scatter_with_hover(self, cols1, cols2, **kwargs):
         """Group of scatterplot with hover & coloring (using bokeh)"""
-        if not BOKEH_LOADED:
-            edu.load_bokeh()
+        import e3tools.eda_display_js_utils as edju
         if isinstance(cols1, str):
             cols1 = [cols1]
         if isinstance(cols2, str):
@@ -396,7 +405,7 @@ class EDATable:
         for c1 in cols1:
             row = []
             for i, c2 in enumerate(cols2):
-                fig = edu.scatter_with_hover(self.tbl.dropna(
+                fig = edju.scatter_with_hover(self.tbl.dropna(
                     subset=[c1, c2]), c1, c2, **kwargs)
                 script, div = components(fig)
                 row.append(script + div)

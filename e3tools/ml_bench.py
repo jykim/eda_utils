@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from sklearn.model_selection import cross_val_score, cross_val_predict, learning_curve, train_test_split
 from sklearn.preprocessing import LabelEncoder, OrdinalEncoder, OneHotEncoder, StandardScaler, MinMaxScaler
 from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix
+from sklearn.metrics import mean_squared_error, mean_absolute_error, explained_variance_score
 from sklearn.inspection import plot_partial_dependence
 
 from e3tools.eda_table import EDATable
@@ -33,6 +34,10 @@ class MLTable(EDATable):
         super(MLTable, self).__init__(tbl)
         self.name = name
         self.c_label = c_label
+        if self.dtypes[c_label] == "object":
+            self.task_type = "classification"
+        else:        
+            self.task_type = "regression"
 
     def get_info(self):
         return {
@@ -116,39 +121,51 @@ class MLModel:
     def train(self, X, y):
         self.model.fit(X, y)
 
-    def evaluate(self, X, y, verbose=False):
+    def evaluate(self, X, y, task_type, verbose=False):
         """
         Calculates metrics and display it
         """
         # Getting the predicted values
         ypred = self.model.predict(X)
-        ypred_score = self.model.predict_proba(X)
         
         # calculating metrics
-        accuracy = accuracy_score(y, ypred)
-        roc_auc = roc_auc_score(y, pd.DataFrame(ypred_score)[1])
-        confusion = confusion_matrix(y, ypred)
-        
-        type1_error = confusion[0][1] / confusion[0].sum() # False Positive
-        type2_error = confusion[1][0] / confusion[1].sum() # False Negative
-        
-        if verbose:
-            print('\n### -- ' + str(type(self.model)).split('.')[-1][:-2] + ' -- ###')
-
-            print('Confusion Matrix: \n', confusion)
-            print('Accuracy: ', accuracy)
-            print('ROC-AUC: ', roc_auc)
+        if task_type == "classification":
+            ypred_score = self.model.predict_proba(X)
+            accuracy = accuracy_score(y, ypred)
+            roc_auc = roc_auc_score(y, pd.DataFrame(ypred_score)[1])
+            confusion = confusion_matrix(y, ypred)
             
-            print('Type 1 error: ', type1_error)
-            print('Type 2 error: ', type2_error)
+            type1_error = confusion[0][1] / confusion[0].sum() # False Positive
+            type2_error = confusion[1][0] / confusion[1].sum() # False Negative
+            
+            if verbose:
+                print('\n### -- ' + str(type(self.model)).split('.')[-1][:-2] + ' -- ###')
 
-        return {
-            "model_name":self.name,
-            "accuracy":accuracy, 
-            "roc_auc":roc_auc,
-            "type1_error":type1_error,
-            "type2_error":type2_error
-            }
+                print('Confusion Matrix: \n', confusion)
+                print('Accuracy: ', accuracy)
+                print('ROC-AUC: ', roc_auc)
+                
+                print('Type 1 error: ', type1_error)
+                print('Type 2 error: ', type2_error)
+
+            return {
+                "model_name":self.name,
+                "accuracy":accuracy, 
+                "roc_auc":roc_auc,
+                "type1_error":type1_error,
+                "type2_error":type2_error
+                }
+        else:
+            mse = mean_squared_error(y, ypred)
+            mae = mean_absolute_error(y, ypred)
+            evs = explained_variance_score(y, ypred)
+
+            return {
+                "model_name":self.name,
+                "mean_squared_error":mse, 
+                "mean_absolute_error":mae,
+                "explained_variance_score":evs,
+                }
 
 class MLBench:
     """This class performs supervised learning for given set of data
@@ -185,7 +202,7 @@ class MLBench:
         for tn, tbl in self.tables.items():
             for mn, mdl in self.models.items():
                 eval_res = tbl.get_info()
-                eval_res.update(self.fit_models[(tn, mn)].evaluate(*split_feature_labels(tbl.test, tbl.c_label)))
+                eval_res.update(self.fit_models[(tn, mn)].evaluate(*split_feature_labels(tbl.test, tbl.c_label), tbl.task_type))
                 res.append(eval_res)
         return pd.DataFrame(res)
 
@@ -202,7 +219,7 @@ class MLBench:
                     axes[j].set_title("PDP for %s \non %s" % (mdl.name, tbl.name))
                     plot_partial_dependence(self.fit_models[(tn, mn)].model, X , [i], ax=axes[j])
 
-    def plot_learning_curve(self, random_state=None):
+    def plot_learning_curve(self, scoring=None, random_state=None):
         for tn, tbl in self.tables.items():
             fig, axes = plt.subplots(1, len(self.models), figsize=(5*len(self.models), 4), sharey=False)
             for j, (mn, mdl) in enumerate(self.models.items()):
@@ -210,7 +227,7 @@ class MLBench:
                 train_sizes = [int(float(len(tbl.train)) * i/10) for i  in range(1, 9)]
                 _, train_scores, test_scores = \
                     learning_curve(mdl.model, *split_feature_labels(tbl.train, tbl.c_label), 
-                        train_sizes=train_sizes, random_state=random_state)
+                        train_sizes=train_sizes, scoring=None, random_state=random_state)
                 train_scores_mean = np.mean(train_scores, axis=1)
                 test_scores_mean = np.mean(test_scores, axis=1)
                 axes[j].plot(train_sizes, train_scores_mean, 'o-', color="r",

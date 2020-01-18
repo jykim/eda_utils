@@ -1,3 +1,4 @@
+import re
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -5,16 +6,10 @@ import seaborn as sns
 import scipy.stats as stats
 from scipy.stats import norm
 from IPython.display import display, HTML, Image
-import plotly.graph_objects as go
 
-import bokeh
-from bokeh.palettes import d3, brewer
-from bokeh.io import show, output_notebook
-from bokeh.plotting import figure, ColumnDataSource
-from bokeh.models import HoverTool, Range1d, CategoricalColorMapper, LinearColorMapper
-from bokeh.models.glyphs import VBar
-
-def print_title(title, tag='h3'):
+def print_title(title, tag='h3', titlize=True):
+    if titlize:
+        title = title.replace("_", " ").title()
     display(HTML("<%s>%s</%s>" % (tag, title, tag)))
     
 
@@ -52,6 +47,24 @@ def _calc_agg_stats(tbl, metrics):
     return pd.Series(res)
 
 
+def background_color_df(val, thresholds=[3, 1, -3, -1]):
+    """ Pandas Background Color: 4 shades of red to green according to thresholds provided
+    :param val: str representation of percentages
+    :param thresholds: percentage thresholds
+    :return: background color for pandas dataframe
+    """
+    nval = float(re.sub('%', '', val))
+    if nval > thresholds[0]:
+        return ('background-color: rgb(102, 179, 102)')
+    elif nval > thresholds[1]:
+        return ('background-color: rgb(153, 204, 153)')
+    elif nval < thresholds[2]:
+        return ('background-color: rgb(245, 102, 102)')
+    elif nval < thresholds[3]:
+        return ('background-color: rgb(248, 153, 153)')
+    return ('')
+
+
 def _stat_calc_ci(tbl, measure, alpha=0.05, col_sample_size='sample_size'):
     """Compute CI from aggregate table
      - Assumption: the sample size for each facet can be summed to get the total sample size
@@ -87,7 +100,11 @@ def plot_facet_measure(facet, metric, **kwargs):
 
 
 def plot_avg_measure(facet, metric, **kwargs):
-    """Plot aggregate results with error bar"""
+    """Plot average results with error bar
+    Called within sns.FacetGrid, with example below: 
+    g = sns.FacetGrid(tbl, col='section', hue='os_type')
+    g.map_dataframe(edu.plot_avg_measure, "item_pos", metric, kind='line')
+    """
     ax = plt.gca()
     tbl = kwargs.pop("data")
     verbose = kwargs.pop("verbose", False)
@@ -97,154 +114,70 @@ def plot_avg_measure(facet, metric, **kwargs):
     tbl_a[(metric + '_avg')].plot(yerr=tbl_a[(metric + '_ci')], ax=ax, **kwargs)
 
 
-def plot_total_measure(facet, metric, **kwargs):
+def plot_total_measure(facet, metric, metric_suffix="_sum", **kwargs):
+    """Plot total results"""
     ax = plt.gca()
     tbl = kwargs.pop("data")
     verbose = kwargs.pop("verbose", False)
-    tbl_a = tbl.groupby(facet).agg({(metric+"_sum"):np.sum})
+    tbl_a = tbl.groupby(facet).agg({(metric+metric_suffix):np.sum})
     if verbose:
-        display(tbl_a[[(metric + '_sum')]].transpose())
-    tbl_a[(metric + '_sum')].plot(ax=ax, **kwargs)
+        display(tbl_a[[(metric + metric_suffix)]].transpose())
+    tbl_a[(metric + metric_suffix)].plot(ax=ax, **kwargs)
 
+### PAGE TRANSITION SANKY PLOT
 
-def get_color_by_ratio(val):
-    colorscale=[[0.0, "rgb(165,0,38)"],
-                [80, "rgb(215,48,39)"],
-                [90, "rgb(244,109,67)"],
-                [95, "rgb(253,174,97)"],
-                [98, "rgb(254,224,144)"],
-                [100, "rgb(224,243,248)"],
-                [102, "rgb(171,217,233)"],
-                [105, "rgb(116,173,209)"],
-                [110, "rgb(69,117,180)"],
-                [120, "rgb(49,54,149)"]]
+def get_color_by_ratio(val, n=20):
+    colors = [
+        "rgb(%d,%d,%d)" % (e[0]*254, e[1]*254, e[2]*254) 
+        for e in sns.diverging_palette(10, 140, n=n)
+    ]
+    ranges = [i for i in range(int(100-n/2), int(100+n/2), 1)]
+    colorscale = [[ranges[i], colors[i]] for i in range(n)]
     for e in colorscale:
         if val < e[0]:
             return e[1]
+    return colors[-1]
 
 
-def plot_page_transition(tbl, node_count=10, min_transition_count=10000, width=1280, height=1024, 
-        title="Page Transition Diagram", col_value='sample_size', col_label=None, verbose=False
-    ):
-    top_pages = tbl.groupby("source_page", as_index=False).agg({col_value:"sum"}).sort_values(col_value, ascending=False).iloc[:node_count]
-    top_pages.reset_index(inplace=True)
-    top_page_index = {r['source_page'] : i for i,r in top_pages.iterrows()}
-    tbl_f = tbl[(tbl.source_page != tbl.page) & tbl.source_page.isin(top_pages.source_page) & tbl.page.isin(top_pages.source_page) & (tbl[col_value] >= min_transition_count)]
+
+def build_funnel_tbl(tbl, fdef):
+    ftbl = tbl[list(fdef.values())].transpose()
+    ftbl['fid'] = list(fdef.keys())
+    ftbl.sort_values('fid', inplace=True)
+    return ftbl
+
+
+def color_sig_red(val):
+    color = 'red' if val < 0.05 else 'black'
+    return 'color: %s' % color
+
+
+def get_ratio_change_str(ctbl, pval):
+    return "%.2f%% → %.2f%% (p:%.3f)" % (ctbl[1][0]/ctbl[0][0]*100, ctbl[1][1]/ctbl[0][1]*100, pval)
+
+
+def calc_user_funnel_p_value(ftbl, verbose=False):
+    """performs chi-squared tests for user funnel tables
+
+    Test the null hypothesis that the ratio (e.g. conversion rate) between the two steps in a 
+    user funnel is the same in two groups (e.g. the treatment and the control).
+
+    The result is not valid for funnel tables with event counts.
+    """
+
+    res = []
+    for cp in combinations(ftbl.columns[0:-1], 2):
+        for rp in combinations(ftbl.index, 2):
+            chisq_input = ftbl.loc[rp, cp].values
+            chisq_input[0] = chisq_input[0] - chisq_input[1]
+            _, pval, _, _ = stats.chi2_contingency(chisq_input.transpose())
+            res.append(["T{0} vs T{1}".format(*cp), "{1} / {0}".format(*rp), chisq_input, pval, get_ratio_change_str(ftbl.loc[rp, cp].values, pval)])
+    chisq_tbl = pd.DataFrame(res, columns=['Treatments', 'Metrics', 'Values', 'Pvalue', 'RatioChange'])
     if verbose:
-        display(tbl_f)
-    sources = [top_page_index[r['source_page']] for i,r in tbl_f.iterrows()]
-    targets = [top_page_index[r['page']] for i,r in tbl_f.iterrows()]
-    values = [r[col_value] for i,r in tbl_f.iterrows()]
-    if col_label:
-        labels = [r[col_label] for i,r in tbl_f.iterrows()]
-        colors = [get_color_by_ratio(r[col_label]) for i,r in tbl_f.iterrows()]
-    else:
-        labels = None
-        colors = None
-
-    fig = go.Figure(data=[go.Sankey(
-        orientation='h',
-        node = dict(
-          pad = 15,
-          thickness = 20,
-          line = dict(color = "black", width = 0.5),
-          # color = "#444",
-          label = top_pages.source_page.values,
-          color = "gray"
-        ),
-        link = dict(
-          source = sources,
-          target = targets,
-          value = values,
-          label = labels,
-          color = colors
-      ))])
-
-    fig.update_layout(title_text=title, width=width, height=height, font_size=10)
-    fig.show()
-
-
-def load_bokeh():
-    """Initialize Bokeh JS for notebook display"""
-    output_notebook(verbose=False, hide_banner=True)
-    res = """
-        <link
-            href="http://cdn.pydata.org/bokeh/release/bokeh-{version}.min.css"
-            rel="stylesheet" type="text/css">
-        <script src="http://cdn.pydata.org/bokeh/release/bokeh-{version}.min.js"></script>
-        """
-    BOKEH_LOADED = True
-    display(HTML(res.format(version=bokeh.__version__)))
-
-
-def scatter_with_hover(df, x, y, hover_cols=None, marker="o", color=None, color_scale='categorical',
-                       title=None, figsize=(300, 300), x_range=None, y_range=None, **kwargs):
-    """
-    Plots an interactive scatter plot of `x` vs `y` using bokeh, with automatic tooltips showing columns from `df`.
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        DataFrame containing the data to be plotted
-    x : str
-        Name of the column to use for the x-axis values
-    y : str
-        Name of the column to use for the y-axis values
-    hover_cols : list of str
-        Columns to show in the hover tooltip (default is to show all)
-    x_range : tuble of size 2
-        range (min_value, max_value) of the x axis
-    marker : str
-        Name of marker to use for scatter plot
-    color : str
-        Columns to be mapped into color value
-    color_scale: str
-        'categorical' vs 'linear' color scale
-    **kwargs
-        Any further arguments to be passed to fig.scatter
-    """
-
-    if color:
-        col_color = df[color].unique().tolist()
-        if color_scale == 'categorical':
-            palette = d3['Category10'][min(max(len(col_color), 3), 10)]
-            color_map = CategoricalColorMapper(factors=col_color,
-                                               palette=palette)
-        elif color_scale == 'linear':
-            color_map = LinearColorMapper(palette=brewer['RdYlGn'][11], low=df[
-                                          color].min(), high=df[color].max())
-        color_val = {'field': color, 'transform': color_map}
-    else:
-        color_val = 'black'
-    r, r_pval = stats.pearsonr(df[x], df[y])
-    r_sig = "*" if r_pval <= 0.05 else ""
-    rho, rho_pval = stats.spearmanr(df[x], df[y])
-    rho_sig = "*" if rho_pval <= 0.05 else ""
-    if title == 'correlation':
-        title = 'Correlation (r:%.3f%s / rho:%.3f%s)' % (r,
-                                                         r_sig, rho, rho_sig)
-    else:
-        title = ""
-    source = ColumnDataSource(data=df)
-    fig = figure(width=figsize[0], height=figsize[1], title=title, tools=[
-                 'box_zoom', 'reset', 'wheel_zoom'])
-    fig.scatter(x, y, source=source, name='main', marker=marker,
-                color=color_val, legend_label=color, **kwargs)
-
-    if x_range:
-        fig.x_range = Range1d(*x_range)
-    if y_range:
-        fig.y_range = Range1d(*y_range)
-
-    hover = HoverTool(names=['main'])
-    if hover_cols is None:
-        hover.tooltips = [(c, '@' + c) for c in df.columns]
-    else:
-        hover.tooltips = [(c, '@' + c) for c in hover_cols]
-    fig.add_tools(hover)
-
-    fig.yaxis.axis_label = y
-    fig.xaxis.axis_label = x
-    return fig
+        display(chisq_tbl)
+    display(chisq_tbl.pivot(columns='Treatments', index='Metrics', values='RatioChange'))
+    display(pd.pivot_table(chisq_tbl, columns='Treatments', index='Metrics', values='Pvalue').round(3).style.applymap(color_sig_red))
+    print("Table of p-values from chi sq. test (ref: https://en.wikipedia.org/wiki/Pearson%27s_chi-squared_test)")
 
 
 class ListTable(list):
