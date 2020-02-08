@@ -17,6 +17,7 @@ from bokeh.io import show, output_notebook
 from bokeh.plotting import figure, ColumnDataSource
 from bokeh.models import HoverTool, Range1d, CategoricalColorMapper, LinearColorMapper
 from bokeh.models.glyphs import VBar
+import e3tools.eda_display_utils as edu
 
 
 ### FUNNEL PLOTS
@@ -50,7 +51,7 @@ def plot_page_transition(tbl, node_count=10, min_transition_count=10000, width=1
     values = [r[col_value] for i,r in tbl_f.iterrows()]
     if col_label:
         labels = [r[col_label] for i,r in tbl_f.iterrows()]
-        colors = [get_color_by_ratio(r[col_label]) for i,r in tbl_f.iterrows()]
+        colors = [edu.get_color_by_ratio(r[col_label]) for i,r in tbl_f.iterrows()]
     else:
         labels = None
         colors = None

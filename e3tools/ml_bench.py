@@ -4,9 +4,9 @@ import matplotlib.pyplot as plt
 
 from sklearn.model_selection import cross_val_score, cross_val_predict, learning_curve, train_test_split
 from sklearn.preprocessing import LabelEncoder, OrdinalEncoder, OneHotEncoder, StandardScaler, MinMaxScaler
-from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix
+from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix, log_loss
 from sklearn.metrics import mean_squared_error, mean_absolute_error, explained_variance_score
-from sklearn.inspection import plot_partial_dependence
+from sklearn.inspection import plot_partial_dependence, permutation_importance
 
 from e3tools.eda_table import EDATable
 
@@ -30,14 +30,38 @@ class MLTable(EDATable):
     """This class prepare data for supervised learning
     - Note that the data type for c_label should be binary
     """
-    def __init__(self, tbl, c_label, name='Default'):
-        super(MLTable, self).__init__(tbl)
+    def __init__(self, tbl_d, tbl_h=None, c_label=None, name='Default'):
+        """ Initialize table for ML
+        
+        """
         self.name = name
         self.c_label = c_label
-        if self.dtypes[c_label] == "object":
-            self.task_type = "classification"
-        else:        
-            self.task_type = "regression"
+        tbl_d["rowtype"] = "dev"
+        if tbl_h is None:
+            tbl = tbl_d
+        else:
+            tbl_h[c_label] = None
+            tbl_h["rowtype"] = "heldout"
+            tbl = pd.concat([tbl_d, tbl_h], axis=0)
+            tbl.reset_index(inplace=True, drop=True)
+        super(MLTable, self).__init__(tbl)
+        if c_label:
+            if self.dtypes[c_label] == "object":
+                if self.vcounts[c_label] == 2:
+                    self.task_type = "classification-binary"
+                elif self.vcounts[c_label] > 2:
+                    self.task_type = "classification-multiclass"
+                else:
+                    print("At least two unique values are required!")
+            else:
+                self.task_type = "regression"
+        else:
+            self.task_type = "unsupervised"
+
+        print("Task type: " + self.task_type)
+
+    def desc_normalized():
+        self.desc(self.tbl_n)
 
     def get_info(self):
         return {
@@ -51,9 +75,9 @@ class MLTable(EDATable):
     def normalize(self, topk=3, methods={}):
         res = []
         for c in self.cols:
-            if self.dtypes[c] in ('category', 'object'):
-                bottomk = self.get_topk_vals(c, topk, False)
-                res.append(self.tbl[c].replace(bottomk, np.nan))
+            if self.dtypes[c] in ('category', 'object') and self.vcounts[c] > topk:
+                topk_vals = self.get_topk_vals(c, topk)
+                res.append(self.tbl[c].apply(lambda e: e if e in topk_vals else np.nan))
             else:
                 res.append(self.tbl[c].fillna(0))
         self.tbl_n = pd.concat(res, axis=1)
@@ -71,8 +95,12 @@ class MLTable(EDATable):
             tbl = self.tbl
         res = []
         for c in cols:
-            if c == self.c_label:
-                res.append(tbl[c])                
+            if c == "rowtype":
+                res.append(tbl[c])
+            elif c == self.c_label:
+                le = LabelEncoder()
+                le.fit(tbl[c])
+                res.append(pd.Series(le.transform(tbl[c]), name=c))                
             elif self.dtypes[c] == 'category':
                 categories = tbl[c].cat.categories
                 res.append(tbl[c].astype(str).replace(categories, list(range(len(categories)))).astype(str))
@@ -80,12 +108,12 @@ class MLTable(EDATable):
                 res.append(pd.get_dummies(tbl[c], prefix=c))
             else:
                 res.append(tbl[c])
-        res_df = pd.concat(res, axis=1).astype(float)
+        res_df = pd.concat(res, axis=1)#.astype(float)
         if impute=='mean':
             self.tbl_e = pd.DataFrame(impy.mean(res_df.values), columns=res_df.columns)
         elif impute=='knn':
             self.tbl_e = pd.DataFrame(impy.fast_knn(res_df.values, k=3), columns=res_df.columns)
-        else: # no imputation
+        else: # no imputation by default
             self.tbl_e = res_df
         return self.tbl_e
 
@@ -95,9 +123,14 @@ class MLTable(EDATable):
             tbl = self.tbl_e
         else:
             tbl = self.tbl
-        self.train, self.test = train_test_split(tbl, test_size=test_size, random_state=random_state)
+        self.dev = tbl[tbl.rowtype=="dev"].drop("rowtype", axis=1)
+        self.train, self.test = train_test_split(self.dev, test_size=test_size, random_state=random_state)
         print('Train Shape:', self.train.shape)
         print('Test Shape:', self.test.shape)
+        print('Dev Shape:', self.dev.shape)
+        self.heldout = tbl[tbl.rowtype=="heldout"].drop(["rowtype", self.c_label], axis=1)
+        if len(self.heldout) > 0:
+            print('Heldout Shape:', self.heldout.shape)
 
     def balance_train(self, random_state=None):
         if not hasattr(self, "train"):
@@ -121,40 +154,57 @@ class MLModel:
     def train(self, X, y):
         self.model.fit(X, y)
 
+    def predict(self, X):
+        """Make Predition on new data
+        """
+        return self.model.predict(X)
+
     def evaluate(self, X, y, task_type, verbose=False):
         """
         Calculates metrics and display it
         """
         # Getting the predicted values
-        ypred = self.model.predict(X)
+        ypred = self.predict(X)
         
-        # calculating metrics
-        if task_type == "classification":
+        # Calculating metrics
+        if task_type == "classification-binary":
             ypred_score = self.model.predict_proba(X)
             accuracy = accuracy_score(y, ypred)
             roc_auc = roc_auc_score(y, pd.DataFrame(ypred_score)[1])
             confusion = confusion_matrix(y, ypred)
+            logloss = log_loss(y, ypred_score)
             
             type1_error = confusion[0][1] / confusion[0].sum() # False Positive
             type2_error = confusion[1][0] / confusion[1].sum() # False Negative
             
             if verbose:
-                print('\n### -- ' + str(type(self.model)).split('.')[-1][:-2] + ' -- ###')
-
                 print('Confusion Matrix: \n', confusion)
-                print('Accuracy: ', accuracy)
-                print('ROC-AUC: ', roc_auc)
-                
-                print('Type 1 error: ', type1_error)
-                print('Type 2 error: ', type2_error)
 
             return {
                 "model_name":self.name,
                 "accuracy":accuracy, 
                 "roc_auc":roc_auc,
+                "log_loss":logloss, 
                 "type1_error":type1_error,
                 "type2_error":type2_error
                 }
+        elif task_type == "classification-multiclass":
+            # import pdb; pdb.set_trace()
+            ypred_score = self.model.predict_proba(X)
+            accuracy = accuracy_score(y, ypred)
+            # roc_auc = roc_auc_score(y, pd.DataFrame(ypred_score)[1], multi_class="ovr")
+            confusion = confusion_matrix(y, ypred)
+            logloss = log_loss(y, ypred_score)
+            
+            if verbose:
+                print('Confusion Matrix: \n', confusion)
+                
+            return {
+                "model_name":self.name,
+                "accuracy":accuracy, 
+                "log_loss":logloss, 
+                # "roc_auc":roc_auc,
+                }            
         else:
             mse = mean_squared_error(y, ypred)
             mae = mean_absolute_error(y, ypred)
@@ -197,12 +247,12 @@ class MLBench:
                 res.append(eval_res)
         return pd.DataFrame(res)
 
-    def evaluate_batch(self):
+    def evaluate_batch(self, verbose=False):
         res = []
         for tn, tbl in self.tables.items():
             for mn, mdl in self.models.items():
                 eval_res = tbl.get_info()
-                eval_res.update(self.fit_models[(tn, mn)].evaluate(*split_feature_labels(tbl.test, tbl.c_label), tbl.task_type))
+                eval_res.update(self.fit_models[(tn, mn)].evaluate(*split_feature_labels(tbl.test, tbl.c_label), tbl.task_type), verbose=verbose)
                 res.append(eval_res)
         return pd.DataFrame(res)
 
@@ -218,6 +268,17 @@ class MLBench:
                 for j, (mn, mdl) in enumerate(self.models.items()):
                     axes[j].set_title("PDP for %s \non %s" % (mdl.name, tbl.name))
                     plot_partial_dependence(self.fit_models[(tn, mn)].model, X , [i], ax=axes[j])
+
+    def plot_feature_importance(self, scoring=None, random_state=None, figsize=(6,6)):
+        for tn, tbl in self.tables.items():
+            fig, axes = plt.subplots(1, len(self.models), figsize=(figsize[0]*len(self.models), figsize[1]), sharey=False)
+            for j, (mn, mdl) in enumerate(self.models.items()):
+                axes[j].set_title("Feature Importance for %s \non %s" % (mdl.name, tbl.name))
+                X_train, y_train = split_feature_labels(tbl.train, tbl.c_label)
+                result = permutation_importance(self.fit_models[(tn, mn)].model, X_train, y_train, scoring=scoring, random_state=random_state)
+                sorted_idx = result.importances_mean.argsort()
+                axes[j].boxplot(result.importances[sorted_idx].T,
+                           vert=False, labels=X_train.columns[sorted_idx])
 
     def plot_learning_curve(self, scoring=None, random_state=None):
         for tn, tbl in self.tables.items():

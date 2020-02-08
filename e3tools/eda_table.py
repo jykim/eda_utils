@@ -144,6 +144,7 @@ class EDATable:
 
         self.dtypes, self.vcdict, self.vcounts, self.ncounts = {}, {}, {}, {}
         for c in tbl.columns:
+            # print(c)
             self.vcdict[c] = self.tbl[c].value_counts()
             self.dtypes[c] = str(self.vcdict[c].index.dtype)
             self.vcounts[c] = len(self.vcdict[c])
@@ -243,6 +244,30 @@ class EDATable:
             row = []
             for e in output:
                 row.append(self.print_summary(c, e, **kwargs))
+            rows.append(row)
+        if return_html:
+            display(HTML(edu.ListTable(rows)._repr_html_("border:0")))
+        else:
+            return rows
+
+    def desc_group(self, group_col, cols=None, col_ptn=None, output='hist', return_html=True, **kwargs):
+        """ Describe each column in table & plot (one row per column)
+        """
+        if col_ptn:
+            cols = [c for c in self.cols if re.search(col_ptn, c)]
+        elif not cols:
+            cols = self.cols
+        tbl_g = self.tbl.groupby(group_col)
+        rows = []
+        row = []
+        for i, c in enumerate(cols):
+            row = []
+            for k,v in tbl_g:
+                row.append("<b>%s: %s</b>" % (group_col, k))
+            rows.append(row)
+            row = []
+            for k,v in tbl_g:
+                row.append(EDATable(v).print_summary(c, output, **kwargs))
             rows.append(row)
         if return_html:
             display(HTML(edu.ListTable(rows)._repr_html_("border:0")))
@@ -425,6 +450,7 @@ class EDATable:
     def get_topk_vals(self, col, k, ascending=True):
         """Get top-k values by count or coverage (% of rows covered)"""
         if k < 1:
+            # Interpret k as coverage (0~1)
             c_sum = 0; i = 0
             total = len(self.tbl)
             for v,c in self.vcdict[col].items():
