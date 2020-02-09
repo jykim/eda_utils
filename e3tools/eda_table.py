@@ -126,9 +126,6 @@ def convert_fig_to_html(fig, figsize=(5, 5)):
 def convert_plotly_fig_to_html(fig, width=450, height=350):
     """ Convert Plotly figure 'fig' into a <img> tag for HTML use using base64 encoding. """
 
-    # png_output = BytesIO()
-    # canvas = FigureCanvas()
-    # canvas.print_png()
     data = base64.b64encode(fig.to_image(format='png', width=width, height=height))
     return '<img src="data:image/png;base64,{}">'.format(urllib.parse.quote(data))
 
@@ -181,7 +178,8 @@ class EDATable:
         t_colinfo = pd.DataFrame([(self.dtypes[c], self.vcounts[c], self.ncounts[c])
                                   for c in self.cols], columns=colnames, index=self.cols)
         t_head = self.tbl.head(n=3).transpose()
-        return pd.concat([t_colinfo, t_head], axis=1)
+        print("Total: %d rows" % len(self.tbl))
+        return pd.concat([t_colinfo, t_head], axis=1, sort=False)
 
     def desc(self, cols=None, col_ptn=None, outputcol=5, topk=10, **kwargs):
         """ Describe each column in table & plot (5 cols per row)
@@ -338,6 +336,7 @@ class EDATable:
                 p_input = p_input.sort_index()[0:max_bins]
             ax = sns.barplot(p_input.values, p_input.index.values, ci=None)
             ax.set_title(col)
+            ax.set_xticklabels(ax.get_xticklabels(), rotation=45)
         else:
             if self.dtypes[col] == "int64" and self.ncounts[col] > 0:
                 p_input = stats.trimboth(pd.to_numeric(
@@ -349,11 +348,9 @@ class EDATable:
                 p_input, density=False, bins=min(self.vcounts[col], max_bins))
             edges_n = [np.round((edges[i] + edges[i + 1]) / 2, 1)
                        for i in range(len(edges) - 1)]
-            ax = sns.barplot(x=edges_n, y=hist, ci=None, color="#E05F68")
+            ax = sns.distplot(p_input)
             ax.set_title(col + "\n(avg:%.2f p50:%.2f)" %
                          (np.mean(self.tbl[col].dropna()), np.median(self.tbl[col].dropna())))
-            # ax = sns.distplot(p_input, axlabel=col)
-        ax.set_xticklabels(ax.get_xticklabels(), rotation=45)
         return convert_fig_to_html(ax.get_figure(), figsize)
 
     # COLUMN-PAIR ANALYSIS

@@ -3,17 +3,21 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from sklearn.model_selection import cross_val_score, cross_val_predict, learning_curve, train_test_split
-from sklearn.preprocessing import LabelEncoder, OrdinalEncoder, OneHotEncoder, StandardScaler, MinMaxScaler
+from sklearn.preprocessing import LabelEncoder, OrdinalEncoder, OneHotEncoder
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, PowerTransformer, QuantileTransformer
+from sklearn.impute import SimpleImputer
+
 from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix, log_loss
 from sklearn.metrics import mean_squared_error, mean_absolute_error, explained_variance_score
 from sklearn.inspection import plot_partial_dependence, permutation_importance
 
 from e3tools.eda_table import EDATable
 
+from scipy.stats import spearmanr
+from scipy.cluster import hierarchy
 from collections import OrderedDict, Counter
 from imblearn.under_sampling import RandomUnderSampler
 from copy import deepcopy
-import impyute as impy
 
 def split_feature_labels(tbl, c_label):
     y = tbl[c_label].copy()
@@ -24,6 +28,10 @@ def split_feature_labels(tbl, c_label):
 def merge_feature_labels(X, y, c_label):
     X[c_label] = y
     return X
+
+
+def apply_transform(transformer, vals):
+    return transformer.fit_transform(vals.reshape(-1, 1)).flatten()
 
 
 class MLTable(EDATable):
@@ -42,7 +50,7 @@ class MLTable(EDATable):
         else:
             tbl_h[c_label] = None
             tbl_h["rowtype"] = "heldout"
-            tbl = pd.concat([tbl_d, tbl_h], axis=0)
+            tbl = pd.concat([tbl_d, tbl_h], axis=0, sort=False)
             tbl.reset_index(inplace=True, drop=True)
         super(MLTable, self).__init__(tbl)
         if c_label:
@@ -60,9 +68,6 @@ class MLTable(EDATable):
 
         print("Task type: " + self.task_type)
 
-    def desc_normalized():
-        self.desc(self.tbl_n)
-
     def get_info(self):
         return {
             "tbl_name":self.name,
@@ -72,18 +77,51 @@ class MLTable(EDATable):
             "test_set":len(self.test),
             }
 
-    def normalize(self, topk=3, methods={}):
+    def preprocess(self, topk_filters={'all':3}, scalers={'all':StandardScaler}, imputers={'all':SimpleImputer}):
+        """ Preprocess column values by data type
+        Categorical / String:
+        - Filter out minority values
+        Numerical:
+        - Standardize range
+        - Impute missing values
+        """
         res = []
         for c in self.cols:
-            if self.dtypes[c] in ('category', 'object') and self.vcounts[c] > topk:
-                topk_vals = self.get_topk_vals(c, topk)
-                res.append(self.tbl[c].apply(lambda e: e if e in topk_vals else np.nan))
+            if self.dtypes[c] in ('category', 'object'):
+                if c in topk_filters:
+                    topk = topk_filters[c]
+                elif 'all' in topk_filters:
+                    topk = topk_filters['all']
+                else:
+                    topk = 3
+                if self.vcounts[c] > topk:
+                    topk_vals = self.get_topk_vals(c, topk)
+                    res.append(self.tbl[c].apply(lambda e: e if e in topk_vals else np.nan))
+                else:
+                    res.append(self.tbl[c])
             else:
-                res.append(self.tbl[c].fillna(0))
+                # Scaling
+                if c in scalers:
+                    v_scaled = apply_transform(scalers[c], self.tbl[c].values)
+                elif 'all' in scalers:
+                    v_scaled = apply_transform(scalers['all'], self.tbl[c].values)
+                else:
+                    v_scaled = self.tbl[c].values
+                # Imputation
+                if c in imputers:
+                    v_imputed = apply_transform(imputers[c], v_scaled)
+                elif 'all' in imputers:
+                    v_imputed = apply_transform(imputers['all'], v_scaled)
+                else:
+                    v_imputed = v_scaled
+                res.append(pd.Series(v_imputed, name=c))
         self.tbl_n = pd.concat(res, axis=1)
         return self.tbl_n
 
     def encode(self, cols=None, col_ptn=None, impute=None):
+        """ Encode column values as features
+        """
+        special_cols = ["rowtype", self.c_label]
         if col_ptn:
             cols = [c for c in self.cols if re.search(col_ptn, c)]
         elif not cols:
@@ -94,13 +132,11 @@ class MLTable(EDATable):
         else:
             tbl = self.tbl
         res = []
+        for c in special_cols:
+            res.append(tbl[c])
         for c in cols:
-            if c == "rowtype":
-                res.append(tbl[c])
-            elif c == self.c_label:
-                le = LabelEncoder()
-                le.fit(tbl[c])
-                res.append(pd.Series(le.transform(tbl[c]), name=c))                
+            if c in special_cols:
+                continue
             elif self.dtypes[c] == 'category':
                 categories = tbl[c].cat.categories
                 res.append(tbl[c].astype(str).replace(categories, list(range(len(categories)))).astype(str))
@@ -108,16 +144,12 @@ class MLTable(EDATable):
                 res.append(pd.get_dummies(tbl[c], prefix=c))
             else:
                 res.append(tbl[c])
-        res_df = pd.concat(res, axis=1)#.astype(float)
-        if impute=='mean':
-            self.tbl_e = pd.DataFrame(impy.mean(res_df.values), columns=res_df.columns)
-        elif impute=='knn':
-            self.tbl_e = pd.DataFrame(impy.fast_knn(res_df.values, k=3), columns=res_df.columns)
-        else: # no imputation by default
-            self.tbl_e = res_df
+        self.tbl_e = pd.concat(res, axis=1)
         return self.tbl_e
 
     def split(self, test_size=0.2, random_state=None):
+        """ Split dataset for train/test
+        """
         if hasattr(self, "tbl_e"):
             print("Using encoded table...")
             tbl = self.tbl_e
@@ -132,7 +164,18 @@ class MLTable(EDATable):
         if len(self.heldout) > 0:
             print('Heldout Shape:', self.heldout.shape)
 
+    def visualize(self):
+        """ Visualize feature correlation
+        """
+        fig, axes = plt.subplots(1, 1, figsize=(8, 8))
+        X, _ = split_feature_labels(self.dev, self.c_label)
+        corr = spearmanr(X).correlation
+        corr_linkage = hierarchy.ward(corr)
+        hierarchy.dendrogram(corr_linkage, labels=self.dev.columns, orientation='right', ax=axes)
+
     def balance_train(self, random_state=None):
+        """ Balance Labels
+        """
         if not hasattr(self, "train"):
             print("Split data first...")
             return
@@ -158,6 +201,11 @@ class MLModel:
         """Make Predition on new data
         """
         return self.model.predict(X)
+
+    def inspect(self):
+        """Inspect model internals
+        """
+        pass
 
     def evaluate(self, X, y, task_type, verbose=False):
         """
