@@ -6,6 +6,7 @@ import seaborn as sns
 import scipy.stats as stats
 from scipy.stats import norm
 from IPython.display import display, HTML, Image
+from itertools import combinations
 
 def print_title(title, tag='h3', titlize=True):
     if titlize:
@@ -156,7 +157,7 @@ def get_ratio_change_str(ctbl, pval):
     return "%.2f%% → %.2f%% (p:%.3f)" % (ctbl[1][0]/ctbl[0][0]*100, ctbl[1][1]/ctbl[0][1]*100, pval)
 
 
-def calc_user_funnel_p_value(ftbl, verbose=False):
+def calc_user_funnel_p_value(ftbl, fcols, verbose=False):
     """performs chi-squared tests for user funnel tables
 
     Test the null hypothesis that the ratio (e.g. conversion rate) between the two steps in a 
@@ -166,7 +167,7 @@ def calc_user_funnel_p_value(ftbl, verbose=False):
     """
 
     res = []
-    for cp in combinations(ftbl.columns[0:-1], 2):
+    for cp in combinations(fcols, 2):
         for rp in combinations(ftbl.index, 2):
             chisq_input = ftbl.loc[rp, cp].values
             chisq_input[0] = chisq_input[0] - chisq_input[1]
@@ -176,8 +177,8 @@ def calc_user_funnel_p_value(ftbl, verbose=False):
     if verbose:
         display(chisq_tbl)
     display(chisq_tbl.pivot(columns='Treatments', index='Metrics', values='RatioChange'))
-    display(pd.pivot_table(chisq_tbl, columns='Treatments', index='Metrics', values='Pvalue').round(3).style.applymap(color_sig_red))
-    print("Table of p-values from chi sq. test (ref: https://en.wikipedia.org/wiki/Pearson%27s_chi-squared_test)")
+    # display(pd.pivot_table(chisq_tbl, columns='Treatments', index='Metrics', values='Pvalue').round(3).style.applymap(color_sig_red))
+    # print("Table of p-values from chi sq. test (ref: https://en.wikipedia.org/wiki/Pearson%27s_chi-squared_test)")
 
 
 class ListTable(list):

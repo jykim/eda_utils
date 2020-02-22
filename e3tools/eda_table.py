@@ -130,6 +130,11 @@ def convert_plotly_fig_to_html(fig, width=450, height=350):
     return '<img src="data:image/png;base64,{}">'.format(urllib.parse.quote(data))
 
 
+def get_count(ses, vals):
+    """ Count occourence of values within the series"""
+    return len(ses[ses.isin(vals)])
+
+
 class EDATable:
     """This class performs EDA (Exploratory Data Analysis) for (sampled) data
     """
@@ -177,9 +182,11 @@ class EDATable:
         colnames = ["DataType", "ValueCount", "NullCount"]
         t_colinfo = pd.DataFrame([(self.dtypes[c], self.vcounts[c], self.ncounts[c])
                                   for c in self.cols], columns=colnames, index=self.cols)
+        t_zero_counts = self.tbl.apply(get_count, vals=[0])
+        t_zero_counts.name = "ZeroCount"
         t_head = self.tbl.head(n=3).transpose()
         print("Total: %d rows" % len(self.tbl))
-        return pd.concat([t_colinfo, t_head], axis=1, sort=False)
+        return pd.concat([t_colinfo, t_zero_counts, t_head], axis=1, sort=False)
 
     def desc(self, cols=None, col_ptn=None, outputcol=5, topk=10, **kwargs):
         """ Describe each column in table & plot (5 cols per row)
@@ -189,13 +196,13 @@ class EDATable:
         elif not cols:
             cols = [c for c in self.cols
                     if (self.dtypes[c] != "object" or self.vcounts[c] < topk)
-                    and self.ncounts[c] < len(self.tbl)]
+                    and self.vcounts[c] > 1 and self.ncounts[c] < len(self.tbl)]
         rows = []
         for colgroup in grouper(outputcol, cols):
             colgroup = [c for c in colgroup if c]
             row = []
             for i, c in enumerate(colgroup):
-                if self.dtypes[c] == "datetime64[ns]":
+                if self.dtypes[c] in ("datetime64[ns]", "date"):
                     continue
                 elif self.dtypes[c] == "object" and self.vcounts[c] > topk:
                     row.append(self.print_summary(c, 'vcounts', **kwargs))
@@ -326,7 +333,6 @@ class EDATable:
 
     def print_seaborn_hist(self, col, figsize=(5, 5), font_scale=1.2, max_bins=20, proportiontocut=0, sort_values=True):
         """ Print the histogram of a column using Seaborn """
-        # import pdb; pdb.set_trace()
         sns.set(font_scale=font_scale)
         if (self.dtypes[col] == "object") or (self.dtypes[col] == "category") or (self.dtypes[col] == "category"):
             p_input = self.tbl[col].dropna().value_counts()

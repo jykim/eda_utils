@@ -1,17 +1,22 @@
+import re
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-from sklearn.model_selection import cross_val_score, cross_val_predict, learning_curve, train_test_split
 from sklearn.preprocessing import LabelEncoder, OrdinalEncoder, OneHotEncoder
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, PowerTransformer, QuantileTransformer
 from sklearn.impute import SimpleImputer
 
-from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix, log_loss
+from sklearn.feature_selection import VarianceThreshold, SelectKBest
+from sklearn.feature_selection import f_regression, chi2, f_classif
+
+from sklearn.model_selection import cross_val_score, cross_val_predict, learning_curve, train_test_split
+from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix, log_loss, plot_roc_curve
 from sklearn.metrics import mean_squared_error, mean_absolute_error, explained_variance_score
 from sklearn.inspection import plot_partial_dependence, permutation_importance
 
 from e3tools.eda_table import EDATable
+import e3tools.eda_display_utils as edu
 
 from scipy.stats import spearmanr
 from scipy.cluster import hierarchy
@@ -31,6 +36,9 @@ def merge_feature_labels(X, y, c_label):
 
 
 def apply_transform(transformer, vals):
+    # print(transformer, vals[:10])
+    # import pdb; pdb.set_trace()
+    # return transformer.fit_transform(vals.reshape(-1, 1)).flatten()
     return transformer.fit_transform(vals.reshape(-1, 1)).flatten()
 
 
@@ -40,10 +48,11 @@ class MLTable(EDATable):
     """
     def __init__(self, tbl_d, tbl_h=None, c_label=None, name='Default'):
         """ Initialize table for ML
-        
+            - tbl_h: optional held-out DataFrame
         """
         self.name = name
         self.c_label = c_label
+        self.cs_special = ["rowtype", self.c_label]
         tbl_d["rowtype"] = "dev"
         if tbl_h is None:
             tbl = tbl_d
@@ -77,7 +86,10 @@ class MLTable(EDATable):
             "test_set":len(self.test),
             }
 
-    def preprocess(self, topk_filters={'all':3}, scalers={'all':StandardScaler}, imputers={'all':SimpleImputer}):
+    # def get_feature_list(self, tbl):
+    #     return [c for c in tbl.columns if c not in self.cs_special]
+
+    def preprocess(self, topk_filters={'all':3}, scalers={'all':StandardScaler()}, imputers={'all':SimpleImputer()}):
         """ Preprocess column values by data type
         Categorical / String:
         - Filter out minority values
@@ -121,7 +133,6 @@ class MLTable(EDATable):
     def encode(self, cols=None, col_ptn=None, impute=None):
         """ Encode column values as features
         """
-        special_cols = ["rowtype", self.c_label]
         if col_ptn:
             cols = [c for c in self.cols if re.search(col_ptn, c)]
         elif not cols:
@@ -132,10 +143,13 @@ class MLTable(EDATable):
         else:
             tbl = self.tbl
         res = []
-        for c in special_cols:
+        for c in self.cs_special:
             res.append(tbl[c])
         for c in cols:
-            if c in special_cols:
+            if self.vcounts[c] <= 1:
+                print("Omitting constant: %s" % c)
+                continue
+            if c in self.cs_special:
                 continue
             elif self.dtypes[c] == 'category':
                 categories = tbl[c].cat.categories
@@ -145,33 +159,68 @@ class MLTable(EDATable):
             else:
                 res.append(tbl[c])
         self.tbl_e = pd.concat(res, axis=1)
+        # self.c_features = self.get_feature_list()
+        print('Encoded DF Shape:', self.tbl_e.shape)
         return self.tbl_e
+
+    def fselect(self, topk=None):
+        """ Feature selection
+        """
+        t_special = self.tbl_e[self.tbl_e.rowtype=="dev"][self.cs_special]
+        t_features = self.tbl_e[self.tbl_e.rowtype=="dev"].drop(self.cs_special, axis=1)
+        if topk:
+            if "classification" in self.task_type:
+                kfs = SelectKBest(k=topk, score_func=f_classif)
+            elif "regression":
+                kfs = SelectKBest(k=topk, score_func=f_regression)
+            else:
+                print("Invalid task_type: %s" % self.task_type)
+            a_selected = kfs.fit_transform(t_features, t_special[self.c_label])
+            cs_selected = t_features.columns[kfs.get_support()]
+            self.tbl_e = self.tbl_e[self.cs_special+cs_selected.tolist()]
+        print('Encoded DF Shape:', self.tbl_e.shape)
 
     def split(self, test_size=0.2, random_state=None):
         """ Split dataset for train/test
         """
-        if hasattr(self, "tbl_e"):
-            print("Using encoded table...")
-            tbl = self.tbl_e
-        else:
-            tbl = self.tbl
-        self.dev = tbl[tbl.rowtype=="dev"].drop("rowtype", axis=1)
-        self.train, self.test = train_test_split(self.dev, test_size=test_size, random_state=random_state)
-        print('Train Shape:', self.train.shape)
-        print('Test Shape:', self.test.shape)
+        if not hasattr(self, "tbl_e"):
+            print("Encode columns as features first!")
+            return
+        self.dev = self.tbl_e[self.tbl_e.rowtype=="dev"].drop("rowtype", axis=1)
+        self.heldout = self.tbl_e[self.tbl_e.rowtype=="heldout"].drop(["rowtype", self.c_label], axis=1)
         print('Dev Shape:', self.dev.shape)
-        self.heldout = tbl[tbl.rowtype=="heldout"].drop(["rowtype", self.c_label], axis=1)
         if len(self.heldout) > 0:
             print('Heldout Shape:', self.heldout.shape)
 
-    def visualize(self):
+        self.train, self.test = train_test_split(self.dev, test_size=test_size, random_state=random_state)
+        print('Train Shape:', self.train.shape)
+        print('Test Shape:', self.test.shape)
+
+    def fcorr(self):
         """ Visualize feature correlation
         """
-        fig, axes = plt.subplots(1, 1, figsize=(8, 8))
         X, _ = split_feature_labels(self.dev, self.c_label)
+        display(X.corr(method="spearman").round(3).style.background_gradient(cmap='cool'))
+
+    def fcluster(self):
+        """ Visualize feature clustering results
+        """
+        X, _ = split_feature_labels(self.dev, self.c_label)
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 8))
         corr = spearmanr(X).correlation
         corr_linkage = hierarchy.ward(corr)
-        hierarchy.dendrogram(corr_linkage, labels=self.dev.columns, orientation='right', ax=axes)
+        dendro = hierarchy.dendrogram(corr_linkage, labels=self.dev.columns, ax=ax1,
+                                      leaf_rotation=90)
+        dendro_idx = np.arange(0, len(dendro['ivl']))
+
+        ax2.imshow(corr[dendro['leaves'], :][:, dendro['leaves']])
+        ax2.set_xticks(dendro_idx)
+        ax2.set_yticks(dendro_idx)
+        ax2.set_xticklabels(dendro['ivl'], rotation='vertical')
+        ax2.set_yticklabels(dendro['ivl'])
+        fig.tight_layout()
+        plt.show()
 
     def balance_train(self, random_state=None):
         """ Balance Labels
@@ -207,7 +256,12 @@ class MLModel:
         """
         pass
 
-    def evaluate(self, X, y, task_type, verbose=False):
+    def optimize(self):
+        """Find optimal hyperparameters
+        """
+        pass
+
+    def evaluate(self, X, y, task_type, verbose=False, ax=None):
         """
         Calculates metrics and display it
         """
@@ -226,7 +280,8 @@ class MLModel:
             type2_error = confusion[1][0] / confusion[1].sum() # False Negative
             
             if verbose:
-                print('Confusion Matrix: \n', confusion)
+                # print('Confusion Matrix: \n', confusion)
+                plot_roc_curve(self.model, X, y, ax=ax)
 
             return {
                 "model_name":self.name,
@@ -237,7 +292,6 @@ class MLModel:
                 "type2_error":type2_error
                 }
         elif task_type == "classification-multiclass":
-            # import pdb; pdb.set_trace()
             ypred_score = self.model.predict_proba(X)
             accuracy = accuracy_score(y, ypred)
             # roc_auc = roc_auc_score(y, pd.DataFrame(ypred_score)[1], multi_class="ovr")
@@ -246,7 +300,7 @@ class MLModel:
             
             if verbose:
                 print('Confusion Matrix: \n', confusion)
-                
+
             return {
                 "model_name":self.name,
                 "accuracy":accuracy, 
@@ -295,12 +349,13 @@ class MLBench:
                 res.append(eval_res)
         return pd.DataFrame(res)
 
-    def evaluate_batch(self, verbose=False):
+    def evaluate_batch(self, verbose=False, figsize=(6,6)):
         res = []
         for tn, tbl in self.tables.items():
-            for mn, mdl in self.models.items():
+            fig, axes = plt.subplots(1, len(self.models), figsize=(figsize[0]*len(self.models), figsize[1]), sharey=False)
+            for j, (mn, mdl)  in enumerate(self.models.items()):
                 eval_res = tbl.get_info()
-                eval_res.update(self.fit_models[(tn, mn)].evaluate(*split_feature_labels(tbl.test, tbl.c_label), tbl.task_type), verbose=verbose)
+                eval_res.update(self.fit_models[(tn, mn)].evaluate(*split_feature_labels(tbl.test, tbl.c_label), tbl.task_type, verbose=verbose, ax=axes[j]))
                 res.append(eval_res)
         return pd.DataFrame(res)
 
@@ -336,7 +391,7 @@ class MLBench:
                 train_sizes = [int(float(len(tbl.train)) * i/10) for i  in range(1, 9)]
                 _, train_scores, test_scores = \
                     learning_curve(mdl.model, *split_feature_labels(tbl.train, tbl.c_label), 
-                        train_sizes=train_sizes, scoring=None, random_state=random_state)
+                        train_sizes=train_sizes, scoring=scoring, random_state=random_state)
                 train_scores_mean = np.mean(train_scores, axis=1)
                 test_scores_mean = np.mean(test_scores, axis=1)
                 axes[j].plot(train_sizes, train_scores_mean, 'o-', color="r",
