@@ -15,7 +15,7 @@ from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix, log
 from sklearn.metrics import mean_squared_error, mean_absolute_error, explained_variance_score
 from sklearn.inspection import plot_partial_dependence, permutation_importance
 
-from e3tools.eda_table import EDATable
+import e3tools.eda_table as et
 import e3tools.eda_display_utils as edu
 
 from scipy.stats import spearmanr
@@ -42,11 +42,11 @@ def apply_transform(transformer, vals):
     return transformer.fit_transform(vals.reshape(-1, 1)).flatten()
 
 
-class MLTable(EDATable):
+class MLTable(et.EDATable):
     """This class prepare data for supervised learning
     - Note that the data type for c_label should be binary
     """
-    def __init__(self, tbl_d, tbl_h=None, c_label=None, name='Default'):
+    def __init__(self, tbl_d, c_label=None, tbl_h=None, name='Default', dtypes={}):
         """ Initialize table for ML
             - tbl_h: optional held-out DataFrame
         """
@@ -61,7 +61,7 @@ class MLTable(EDATable):
             tbl_h["rowtype"] = "heldout"
             tbl = pd.concat([tbl_d, tbl_h], axis=0, sort=False)
             tbl.reset_index(inplace=True, drop=True)
-        super(MLTable, self).__init__(tbl)
+        super(MLTable, self).__init__(tbl, dtypes)
         if c_label:
             if self.dtypes[c_label] == "object":
                 if self.vcounts[c_label] == 2:
@@ -85,9 +85,6 @@ class MLTable(EDATable):
             "train_set":len(self.train),
             "test_set":len(self.test),
             }
-
-    # def get_feature_list(self, tbl):
-    #     return [c for c in tbl.columns if c not in self.cs_special]
 
     def preprocess(self, topk_filters={'all':3}, scalers={'all':StandardScaler()}, imputers={'all':SimpleImputer()}):
         """ Preprocess column values by data type
@@ -180,7 +177,7 @@ class MLTable(EDATable):
             self.tbl_e = self.tbl_e[self.cs_special+cs_selected.tolist()]
         print('Encoded DF Shape:', self.tbl_e.shape)
 
-    def split(self, test_size=0.2, random_state=None):
+    def split(self, test_size=0.2, random_state=None, silent=False):
         """ Split dataset for train/test
         """
         if not hasattr(self, "tbl_e"):
@@ -188,13 +185,14 @@ class MLTable(EDATable):
             return
         self.dev = self.tbl_e[self.tbl_e.rowtype=="dev"].drop("rowtype", axis=1)
         self.heldout = self.tbl_e[self.tbl_e.rowtype=="heldout"].drop(["rowtype", self.c_label], axis=1)
-        print('Dev Shape:', self.dev.shape)
-        if len(self.heldout) > 0:
+        if len(self.heldout) > 0 and not silent:
             print('Heldout Shape:', self.heldout.shape)
 
         self.train, self.test = train_test_split(self.dev, test_size=test_size, random_state=random_state)
-        print('Train Shape:', self.train.shape)
-        print('Test Shape:', self.test.shape)
+        if not silent:
+            print('Dev Shape:', self.dev.shape)
+            print('Train Shape:', self.train.shape)
+            print('Test Shape:', self.test.shape)
 
     def fcorr(self):
         """ Visualize feature correlation
@@ -246,10 +244,9 @@ class MLModel:
     def train(self, X, y):
         self.model.fit(X, y)
 
-    def predict(self, X):
-        """Make Predition on new data
-        """
-        return self.model.predict(X)
+    def get_ypred_from_score(self, ypred_score):
+        return [self.model.classes_[i] for i in np.argmax(ypred_score, 1)]
+
 
     def inspect(self):
         """Inspect model internals
@@ -261,16 +258,19 @@ class MLModel:
         """
         pass
 
-    def evaluate(self, X, y, task_type, verbose=False, ax=None):
+    def evaluate(self, X, y, task_type, verbose=False, ax=None, ypred=None, ypred_score=None):
         """
         Calculates metrics and display it
         """
         # Getting the predicted values
-        ypred = self.predict(X)
+        if ypred is None:
+            ypred = self.model.predict(X)
         
         # Calculating metrics
         if task_type == "classification-binary":
-            ypred_score = self.model.predict_proba(X)
+            if ypred_score is None:
+                ypred_score = self.model.predict_proba(X)
+                
             accuracy = accuracy_score(y, ypred)
             roc_auc = roc_auc_score(y, pd.DataFrame(ypred_score)[1])
             confusion = confusion_matrix(y, ypred)
@@ -280,7 +280,6 @@ class MLModel:
             type2_error = confusion[1][0] / confusion[1].sum() # False Negative
             
             if verbose:
-                # print('Confusion Matrix: \n', confusion)
                 plot_roc_curve(self.model, X, y, ax=ax)
 
             return {
@@ -344,20 +343,44 @@ class MLBench:
         for tn, tbl in self.tables.items():
             for mn, mdl in self.models.items():
                 eval_res = tbl.get_info()
-                cv_score = cross_val_score(mdl.model, *split_feature_labels(tbl.train, tbl.c_label), scoring=scoring, cv=nfolds)
+                cv_score = cross_val_score(mdl.model, *split_feature_labels(tbl.train, tbl.c_label), scoring=scoring, cv=nfolds, n_jobs=-1)
                 eval_res.update({"model_name":mn, ("cv_"+scoring):cv_score.mean()})
                 res.append(eval_res)
-        return pd.DataFrame(res)
+        return pd.DataFrame(res).drop(['train_set', 'test_set'], axis=1)
 
     def evaluate_batch(self, verbose=False, figsize=(6,6)):
         res = []
         for tn, tbl in self.tables.items():
-            fig, axes = plt.subplots(1, len(self.models), figsize=(figsize[0]*len(self.models), figsize[1]), sharey=False)
+            if verbose:
+                fig, axes = plt.subplots(1, len(self.models), figsize=(figsize[0]*len(self.models), figsize[1]), sharey=False)
+            else:
+                axes = [None] * len(self.models)
             for j, (mn, mdl)  in enumerate(self.models.items()):
                 eval_res = tbl.get_info()
-                eval_res.update(self.fit_models[(tn, mn)].evaluate(*split_feature_labels(tbl.test, tbl.c_label), tbl.task_type, verbose=verbose, ax=axes[j]))
+                eval_res.update(
+                    self.fit_models[(tn, mn)].evaluate(*split_feature_labels(tbl.test, tbl.c_label), tbl.task_type, verbose=verbose, ax=axes[j])
+                )
                 res.append(eval_res)
         return pd.DataFrame(res)
+
+    def evaluate_ensemble(self, model_weights={}):
+        # e_outcome = OrderedDict()
+        e_model = None
+        e_table = None
+        e_ypred = None
+        e_ypred_score = None
+        for tn, tbl in self.tables.items():
+            for j, (mn, mdl)  in enumerate(self.models.items()):
+                ypred_score = self.fit_models[(tn, mn)].model.predict_proba(split_feature_labels(tbl.test, tbl.c_label)[0])
+                if e_ypred_score is None:
+                    e_table = tbl
+                    e_model = deepcopy(self.fit_models[(tn, mn)])
+                    e_ypred_score = ypred_score
+                else:
+                    e_ypred_score += ypred_score * model_weights.get((tn, mn), 0)
+
+        ypred = e_model.get_ypred_from_score(e_ypred_score)
+        return e_model.evaluate(*split_feature_labels(tbl.test, tbl.c_label), e_table.task_type, ypred=ypred, ypred_score=e_ypred_score)
 
     def plot_partial_dependence(self, feature_set=None):
         for tn, tbl in self.tables.items():

@@ -21,7 +21,6 @@ from six.moves import urllib
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from statsmodels.graphics.mosaicplot import mosaic
 from IPython.display import display, HTML, Image
-from bokeh.embed import components
 
 from math import pi
 try:
@@ -35,9 +34,6 @@ pd.options.display.max_rows = 999
 pd.options.display.max_columns = 999
 pd.options.display.max_colwidth = 999
 pd.options.display.max_seq_items = 999
-
-PLOT_LIB = "seaborn"
-BOKEH_LOADED = False
 
 
 def flatten_list(arg):
@@ -139,14 +135,24 @@ class EDATable:
     """This class performs EDA (Exploratory Data Analysis) for (sampled) data
     """
 
-    def __init__(self, tbl):
+    def __init__(self, tbl, dtypes={}):
         """Calculate per-column stats"""
         self.tbl = tbl
         self.cols = tbl.columns
 
         self.dtypes, self.vcdict, self.vcounts, self.ncounts = {}, {}, {}, {}
         for c in tbl.columns:
-            # print(c)
+            # import pdb; pdb.set_trace()
+            # print(self.tbl[c].head())
+
+            if c in dtypes:
+                if dtypes[c]['dtype'] == "datetime":
+                    self.tbl[c] = pd.to_datetime(self.tbl[c], format=dtypes[c].get('format'), errors='coerce')
+                    self.tbl[c+'_date'] = self.tbl[c].dt.date
+                elif dtypes[c]['dtype'] == "category":
+                    add_category_dtype(tbl, c, dtypes[c]['categories'], c_suffix="")
+                else:
+                    raise Exception("Invalid dtype! (%s)" % c)                    
             self.vcdict[c] = self.tbl[c].value_counts()
             self.dtypes[c] = str(self.vcdict[c].index.dtype)
             self.vcounts[c] = len(self.vcdict[c])
@@ -203,7 +209,7 @@ class EDATable:
             row = []
             for i, c in enumerate(colgroup):
                 if self.dtypes[c] in ("datetime64[ns]", "date"):
-                    continue
+                    row.append(self.print_summary(c, 'hist', **kwargs))
                 elif self.dtypes[c] == "object" and self.vcounts[c] > topk:
                     row.append(self.print_summary(c, 'vcounts', **kwargs))
                 else:
@@ -211,31 +217,10 @@ class EDATable:
             rows.append(row)
         display(HTML(edu.ListTable(rows)._repr_html_("border:0")))
 
-    def outliers(self, cols=None, col_ptn=None, n_row=10, std_thr=5, show_all_cols=False, **kwargs):
-        """ Show outliers for each column in table
+    def desc_ts(self, c_ts):
+        """ Show column values by timestamp
         """
-        if col_ptn:
-            cols = [c for c in self.cols if re.search(col_ptn, c)]
-        elif not cols:
-            cols = self.cols
-        rows = []
-        target_cols = [c for c in cols if self.dtypes[
-            c] not in ["datetime64[ns]", "object"]]
-
-        for i, c in enumerate(target_cols):
-            tbl_o = self.tbl[
-                (np.abs(self.tbl[c] - self.tbl[c].mean()) > (std_thr * self.tbl[c].std()))]
-            if len(tbl_o) > 0:
-                edu.print_title("Column: %s" % c)
-                print("%.3f +- %.1f * %.3f" %
-                      (self.tbl[c].mean(), std_thr, self.tbl[c].std()))
-                print("Total: %d Outlier: %d (%.3f%%)" %
-                      (len(self.tbl), len(tbl_o), len(tbl_o) / len(self.tbl)))
-                cm = sns.light_palette("red", as_cmap=True)
-                if not show_all_cols:
-                    tbl_o = tbl_o[[c] + [e for e in target_cols if e != c]]
-                display(tbl_o[0:n_row].style.background_gradient(
-                    subset=[c], cmap=cm))
+        pass
 
     def desc_detail(self, cols=None, col_ptn=None, output=['desc', 'vcounts', 'hist'], return_html=True, **kwargs):
         """ Describe each column in table & plot (one row per column)
@@ -255,14 +240,14 @@ class EDATable:
         else:
             return rows
 
-    def desc_group(self, group_col, cols=None, col_ptn=None, output='hist', return_html=True, **kwargs):
+    def desc_group(self, group_col, cols=None, col_ptn=None, output='hist', min_count=10, return_html=True, **kwargs):
         """ Describe each column in table & plot (one row per column)
         """
         if col_ptn:
             cols = [c for c in self.cols if re.search(col_ptn, c)]
         elif not cols:
-            cols = self.cols
-        tbl_g = self.tbl.groupby(group_col)
+            cols = [c for c in self.cols if c != group_col]
+        tbl_g = self.tbl.groupby(group_col).filter(lambda x: len(x) >= min_count).groupby(group_col)
         rows = []
         row = []
         for i, c in enumerate(cols):
@@ -279,7 +264,7 @@ class EDATable:
         else:
             return rows
 
-    def print_summary(self, c, output, sort=True, topk=10, plot_lib=PLOT_LIB, **kwargs):
+    def print_summary(self, c, output, sort=True, topk=10, **kwargs):
         """ Summarize a column with appropriate table / visualization
         """
         try:
@@ -295,46 +280,19 @@ class EDATable:
             elif output == 'hist':
                 if self.vcounts[c] < 2:
                     return ""
-                elif plot_lib == "bokeh":
-                    return self.print_bokeh_hist(c, **kwargs)
-                elif plot_lib == "seaborn":
-                    return self.print_seaborn_hist(c, **kwargs)
-                else:
-                    raise Exception("Invalid input!")
+                return self.print_seaborn_hist(c, **kwargs)
         except Exception as e:
             print(c, e)
 
-    def print_bokeh_hist(self, col, figsize=(250, 250), max_bins=25, proportiontocut=0):
-        """ Print the histogram of a column using Boken """
-        if self.dtypes[col] == "object":
-            p_input = self.tbl[col].dropna().value_counts().sort_index()
-            p = figure(x_range=p_input.index.tolist(), plot_width=figsize[0], plot_height=figsize[1], title=None,
-                       toolbar_location=None, tools="")
-            p.vbar(x=p_input.index.values, top=p_input.values,
-                   width=0.5, line_color="#033649")
-        else:
-            if self.dtypes[col] == "int64" and self.ncounts[col] > 0:
-                p_input = stats.trimboth(pd.to_numeric(
-                    self.tbl[col].dropna()), proportiontocut)
-            else:
-                p_input = stats.trimboth(
-                    self.tbl[col].dropna(), proportiontocut)
-            hist, edges = np.histogram(
-                p_input, density=False, bins=min(self.vcounts[col], max_bins))
-            p = figure(plot_width=figsize[0], plot_height=figsize[1], title=None,
-                       toolbar_location=None, tools="")
-            p.quad(top=hist, bottom=0, left=edges[:-1], right=edges[1:],
-                   fill_color="#E05F68", line_color="#033649")
-        p.yaxis.axis_label = "count"
-        p.xaxis.axis_label = col
-        p.xaxis.major_label_orientation = pi / 4
-        script, div = components(p)
-        return script + div
-
     def print_seaborn_hist(self, col, figsize=(5, 5), font_scale=1.2, max_bins=20, proportiontocut=0, sort_values=True):
-        """ Print the histogram of a column using Seaborn """
+        """ Print the histogram of a column using Seaborn 
+        """
         sns.set(font_scale=font_scale)
-        if (self.dtypes[col] == "object") or (self.dtypes[col] == "category") or (self.dtypes[col] == "category"):
+        if self.dtypes[col] in ("datetime64[ns]", "date"):
+            ax = self.tbl.groupby([self.tbl[col].dt.year, self.tbl[col].dt.month])[col].count().plot(kind='bar')
+            ax.set_title(col+" (monthly)")
+            ax.set_xlabel(None)
+        elif (self.dtypes[col] == "object") or (self.dtypes[col] == "category"):
             p_input = self.tbl[col].dropna().value_counts()
             if sort_values:
                 p_input = p_input.sort_values(ascending=False)[0:max_bins]
@@ -359,7 +317,32 @@ class EDATable:
                          (np.mean(self.tbl[col].dropna()), np.median(self.tbl[col].dropna())))
         return convert_fig_to_html(ax.get_figure(), figsize)
 
-    # COLUMN-PAIR ANALYSIS
+    def outliers(self, cols=None, col_ptn=None, n_row=10, std_thr=5, show_all_cols=False, **kwargs):
+        """ Show outliers for each column in table
+        """
+        if col_ptn:
+            cols = [c for c in self.cols if re.search(col_ptn, c)]
+        elif not cols:
+            cols = self.cols
+        rows = []
+        target_cols = [c for c in cols if self.dtypes[c] not in ["datetime64[ns]", "object"]]
+
+        for i, c in enumerate(target_cols):
+            tbl_o = self.tbl[
+                (np.abs(self.tbl[c] - self.tbl[c].mean()) > (std_thr * self.tbl[c].std()))]
+            if len(tbl_o) > 0:
+                edu.print_title("Column: %s" % c)
+                print("%.3f +- %.1f * %.3f" %
+                      (self.tbl[c].mean(), std_thr, self.tbl[c].std()))
+                print("Total: %d Outlier: %d (%.3f%%)" %
+                      (len(self.tbl), len(tbl_o), len(tbl_o) / len(self.tbl)))
+                cm = sns.light_palette("red", as_cmap=True)
+                if not show_all_cols:
+                    tbl_o = tbl_o[[c] + [e for e in target_cols if e != c]]
+                display(tbl_o[0:n_row].style.background_gradient(
+                    subset=[c], cmap=cm))
+
+   # COLUMN-PAIR ANALYSIS
 
     def corr(self, cols=None, method="spearman"):
         """Correlation among Numerical Columns"""
@@ -377,7 +360,20 @@ class EDATable:
     def is_empty(self, col):
         return len(self.tbl[col].dropna()) == 0
 
-    def pairplot(self, cols1=None, cols2=None, plot_lib=PLOT_LIB, xlim=None, ylim=None, figsize=(5, 5), **kwargs):
+    def plot_datetime(self, dt_col, val_col, agg_unit='month', agg_func=np.mean):
+        """Plot values aggregated by datetime"""
+        if agg_unit == 'year':
+            agg_cols = self.tbl[dt_col].dt.year
+        if agg_unit == 'month':
+            agg_cols = [self.tbl[dt_col].dt.year, self.tbl[dt_col].dt.month]
+        if agg_unit == 'day':
+            agg_cols = self.tbl[dt_col].dt.dayofyear
+        elif agg_unit == None:            
+            agg_cols = self.tbl[dt_col]
+        return self.tbl.groupby(agg_cols).agg({val_col:agg_func}).plot(kind='bar')
+
+
+    def pairplot(self, cols1=None, cols2=None, xlim=None, ylim=None, figsize=(5, 5), **kwargs):
         """Pairplot for any data types"""
         if isinstance(cols1, str):
             cols1 = [cols1]
@@ -396,7 +392,13 @@ class EDATable:
                 elif c1 == c2:
                     row.append(self.print_summary(c1, 'hist', **kwargs))
                 else:
-                    if self.dtypes[c1] != "object" and self.dtypes[c2] != "object":
+                    if "datetime" in self.dtypes[c1] and self.dtypes[c2] != "object":
+                        ax = self.plot_datetime(c1, c2, **kwargs)
+                        fig = ax.get_figure()
+                    elif "datetime" in self.dtypes[c2] and self.dtypes[c1] != "object":
+                        ax = self.plot_datetime(c2, c1, **kwargs)
+                        fig = ax.get_figure()
+                    elif self.dtypes[c1] != "object" and self.dtypes[c2] != "object":
                         ax = sns.regplot(
                             self.tbl[c1], self.tbl[c2])
                         ax.set(xlim=xlim, ylim=ylim)
@@ -419,12 +421,14 @@ class EDATable:
                         fig = mosaic(
                             tbl_f, index=[c2, c1], title="{} vs. {}".format(c2, c1))[0]
                     row.append(convert_fig_to_html(fig, figsize=figsize))
+                    # fig.close()
             rows.append(row)
         display(HTML(edu.ListTable(rows)._repr_html_("border:0")))
 
     def pairplot_scatter_with_hover(self, cols1, cols2, **kwargs):
         """Group of scatterplot with hover & coloring (using bokeh)"""
         import e3tools.eda_display_js_utils as edju
+        from bokeh.embed import components
         if isinstance(cols1, str):
             cols1 = [cols1]
         if isinstance(cols2, str):

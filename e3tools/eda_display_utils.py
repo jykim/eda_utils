@@ -181,6 +181,14 @@ def calc_user_funnel_p_value(ftbl, fcols, verbose=False):
     # print("Table of p-values from chi sq. test (ref: https://en.wikipedia.org/wiki/Pearson%27s_chi-squared_test)")
 
 
+def display_side_by_side(*args):
+    """Display dataframes side by side """
+    html_str=''
+    for df in args:
+        html_str += df.render()
+    display_html(html_str.replace('table','table style="display:inline"'),raw=True)
+
+
 class ListTable(list):
     """ Overridden list class which takes a 2-dimensional list of
         the form [[1,2,3],[4,5,6]], and renders an HTML Table in
