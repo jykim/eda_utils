@@ -12,17 +12,24 @@ def print_title(title, tag='h3', titlize=True):
     if titlize:
         title = title.replace("_", " ").title()
     display(HTML("<%s>%s</%s>" % (tag, title, tag)))
-    
+ 
 
-def display_sample_sessions(tbl, col_session, col_sort, n_session=5, n_row=15, session_ids=None, cols=None):
-    """Display master table rows corresponding to a few sample sessions (based on col_session) """
-    if not session_ids:
-        session_ids = tbl[col_session].unique()[:n_session]
-        print(session_ids)
-    if not cols:
-        cols = tbl.columns
-    for k, v in tbl[tbl[col_session].isin(session_ids)].groupby([col_session]):
-        display(v.sort_values(col_sort)[cols].head(n_row))
+def display_sample_groups(tbl, c_group, c_sort=None, display_cols=None, highlight_cols=None, n_group=5, n_row=15, group_ids=None, show_group_title=True, dedup_rows=False):
+    """Display master table rows corresponding to a few sample groups (based on c_group) """
+    if not group_ids:
+        group_ids = tbl[c_group].unique()[:n_group]
+    if not display_cols:
+        display_cols = tbl.columns
+    for k, v in tbl[tbl[c_group].isin(group_ids)].groupby([c_group]):
+        if show_group_title:
+            print_title("%s: %s" % (c_group, k), "b")
+        if c_sort:
+            v = v.sort_values(c_sort)
+        if dedup_rows:
+            v = v.drop_duplicates(display_cols)
+        display(v[display_cols].head(n_row).style.bar(subset=highlight_cols, color='#d65f5f'))
+        if len(v) >= n_row:
+            display(HTML("<div align='left'>  Total: %d rows</div>" % len(v)))
 
 
 def ensure_nested_list(l):
@@ -81,12 +88,15 @@ def _stat_calc_ci(tbl, measure, alpha=0.05, col_sample_size='sample_size'):
          (measure + '_sum'): total,
          (measure + '_avg'): avg,
          (measure + '_sd'): np.sqrt(var),
-         (measure + '_ci'): ci},
-        index=[measure + '_sum', measure + '_avg', measure + '_ci', measure + '_sd', 'sample_size'])
+         (measure + '_ci'): ci,
+         (measure + '_min'): avg-ci,
+         (measure + '_max'): avg+ci},
+        index=[measure + '_sum', measure + '_avg', measure + '_ci', measure + '_min', measure + '_max', measure + '_sd', 'sample_size'])
 
 
 def sum_agg_table(tbl, facets, metrics, col_ptn=None):
-    """"""
+    """
+    """
     if facets == ["Overall"]:
         tbl["Overall"] = "Overall"
     agg_tbls = [tbl.groupby(facets).apply(_stat_calc_ci, m) for m in metrics]
@@ -109,10 +119,20 @@ def plot_avg_measure(facet, metric, **kwargs):
     ax = plt.gca()
     tbl = kwargs.pop("data")
     verbose = kwargs.pop("verbose", False)
-    tbl_a = tbl.groupby(facet).apply(_stat_calc_ci, metric)
-    if verbose:
-        display(tbl_a[[(metric + '_avg'), (metric + '_ci')]])
-    tbl_a[(metric + '_avg')].plot(yerr=tbl_a[(metric + '_ci')], ax=ax, **kwargs)
+    if kwargs.pop("sample_size_per_metric", False):
+        col_sample_size = metric + '_sample_size'
+    else:
+        col_sample_size = 'sample_size'
+    try:
+        tbl_a = tbl.groupby(facet).apply(_stat_calc_ci, metric, col_sample_size=col_sample_size)
+        if verbose:
+            print(kwargs)
+            display(tbl_a[[(metric + '_avg'), (metric + '_ci'), col_sample_size]])
+        tbl_a[(metric + '_avg')].plot(yerr=tbl_a[(metric + '_ci')], ax=ax, **kwargs)
+    except Exception as e:
+        if verbose:
+            print(kwargs)
+            print(tbl_a.head())
 
 
 def plot_total_measure(facet, metric, metric_suffix="_sum", **kwargs):
@@ -120,10 +140,14 @@ def plot_total_measure(facet, metric, metric_suffix="_sum", **kwargs):
     ax = plt.gca()
     tbl = kwargs.pop("data")
     verbose = kwargs.pop("verbose", False)
-    tbl_a = tbl.groupby(facet).agg({(metric+metric_suffix):np.sum})
-    if verbose:
-        display(tbl_a[[(metric + metric_suffix)]].transpose())
-    tbl_a[(metric + metric_suffix)].plot(ax=ax, **kwargs)
+    try:
+        tbl_a = tbl.groupby(facet).agg({(metric+metric_suffix):np.sum})
+        if verbose:
+            display(tbl_a[[(metric + metric_suffix)]].transpose())
+        tbl_a[(metric + metric_suffix)].plot(ax=ax, **kwargs)
+    except Exception as e:
+        print(kwargs)
+        print(tbl_a.head())
 
 ### PAGE TRANSITION SANKY PLOT
 
@@ -177,8 +201,6 @@ def calc_user_funnel_p_value(ftbl, fcols, verbose=False):
     if verbose:
         display(chisq_tbl)
     display(chisq_tbl.pivot(columns='Treatments', index='Metrics', values='RatioChange'))
-    # display(pd.pivot_table(chisq_tbl, columns='Treatments', index='Metrics', values='Pvalue').round(3).style.applymap(color_sig_red))
-    # print("Table of p-values from chi sq. test (ref: https://en.wikipedia.org/wiki/Pearson%27s_chi-squared_test)")
 
 
 def display_side_by_side(*args):
