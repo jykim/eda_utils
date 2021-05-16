@@ -142,9 +142,6 @@ class EDATable:
 
         self.dtypes, self.vcdict, self.vcounts, self.ncounts = {}, {}, {}, {}
         for c in tbl.columns:
-            # import pdb; pdb.set_trace()
-            # print(self.tbl[c].head())
-
             if c in dtypes:
                 if dtypes[c]['dtype'] == "datetime":
                     self.tbl[c] = pd.to_datetime(self.tbl[c], format=dtypes[c].get('format'), errors='coerce')
@@ -168,14 +165,14 @@ class EDATable:
         return EDATable(self.tbl.query(query))
 
     def groupby(self, by, gfilter=None, min_count=25):
-        """Return EDATable object for each row group"""
+        """Return (group name, EDATable object) tuple for each row group"""
         for gname, gtbl in self.tbl.groupby(by):
             if len(gtbl) < min_count:
                 continue
             if gfilter and gname not in gfilter:
                 continue
-            display(HTML("<h3>%s (n:%d)</h3>" % (str(gname), len(gtbl))))
-            yield EDATable(gtbl)
+            display(HTML("<b>%s (n:%d)</b>" % (str(gname), len(gtbl))))
+            yield gname, EDATable(gtbl)
 
     # COLUMN-LEVEL ANALYSIS
 
@@ -194,7 +191,7 @@ class EDATable:
         print("Total: %d rows" % len(self.tbl))
         return pd.concat([t_colinfo, t_zero_counts, t_head], axis=1, sort=False)
 
-    def desc(self, cols=None, col_ptn=None, outputcol=5, topk=10, **kwargs):
+    def desc(self, cols=None, col_ptn=None, outputcol=4, topk=10, **kwargs):
         """ Describe each column in table & plot (5 cols per row)
         """
         if col_ptn:
@@ -240,14 +237,16 @@ class EDATable:
         else:
             return rows
 
-    def desc_group(self, group_col, cols=None, col_ptn=None, output='hist', min_count=10, return_html=True, **kwargs):
+    def desc_group(self, group_col, cols=None, col_ptn=None, output='hist', min_count=10, gfilter=[], return_html=True, **kwargs):
         """ Describe each column in table & plot (one row per column)
         """
         if col_ptn:
             cols = [c for c in self.cols if re.search(col_ptn, c)]
         elif not cols:
             cols = [c for c in self.cols if c != group_col]
-        tbl_g = self.tbl.groupby(group_col).filter(lambda x: len(x) >= min_count).groupby(group_col)
+        tbl_g = self.tbl.groupby(group_col).\
+            filter(lambda x: (len(gfilter) == 0 or x[group_col].iloc[0] in gfilter) and len(x) >= min_count).\
+            groupby(group_col)
         rows = []
         row = []
         for i, c in enumerate(cols):
@@ -267,54 +266,57 @@ class EDATable:
     def print_summary(self, c, output, sort=True, topk=10, **kwargs):
         """ Summarize a column with appropriate table / visualization
         """
+        if 'row_filter' in kwargs:
+            vals = self.tbl.query(kwargs['row_filter'])[c]
+            # print("Leaving %d rows out of %d" % (len(vals), len(self.tbl)))
+        else:
+            vals = self.tbl[c]
         try:
             if output == 'summary':
-                return self.tbl[c].mean().to_html()
+                return vals.mean().to_html()
             elif output == 'desc':
-                return self.tbl[c].describe(percentiles=[.1, .25, .5, .75, .9]).to_frame().to_html()
+                return vals.describe(percentiles=[.1, .25, .5, .75, .9]).to_frame().to_html()
             elif output == 'vcounts':
                 if sort:
-                    return self.tbl[c].value_counts(sort=sort).head(topk).to_frame().to_html()
+                    return vals.value_counts(sort=sort).head(topk).to_frame().to_html()
                 else:
-                    return self.tbl[c].value_counts().sort_index().to_frame().to_html()
+                    return vals.value_counts().sort_index().to_frame().to_html()
             elif output == 'hist':
                 if self.vcounts[c] < 2:
                     return ""
-                return self.print_seaborn_hist(c, **kwargs)
+                return self.print_seaborn_hist(c, vals, **kwargs)
         except Exception as e:
             print(c, e)
 
-    def print_seaborn_hist(self, col, figsize=(5, 5), font_scale=1.2, max_bins=20, proportiontocut=0, sort_values=True):
+    def print_seaborn_hist(self, col, vals, figsize=(5, 5), font_scale=1.2, max_bins=20, proportiontocut=0, sort_values=True, xlim=None, **kwargs):
         """ Print the histogram of a column using Seaborn 
         """
         sns.set(font_scale=font_scale)
         if self.dtypes[col] in ("datetime64[ns]", "date"):
-            ax = self.tbl.groupby([self.tbl[col].dt.year, self.tbl[col].dt.month])[col].count().plot(kind='bar')
+            ax = self.tbl.groupby([vals.dt.year, vals.dt.month])[col].count().plot(kind='bar')
             ax.set_title(col+" (monthly)")
             ax.set_xlabel(None)
         elif (self.dtypes[col] == "object") or (self.dtypes[col] == "category"):
-            p_input = self.tbl[col].dropna().value_counts()
+            p_input = vals.dropna().value_counts()
             if sort_values:
                 p_input = p_input.sort_values(ascending=False)[0:max_bins]
             else:
                 p_input = p_input.sort_index()[0:max_bins]
-            ax = sns.barplot(p_input.values, p_input.index.values, ci=None)
+            ax = sns.barplot(x=p_input.values, y=p_input.index.values, ci=None)
             ax.set_title(col)
             ax.set_xticklabels(ax.get_xticklabels(), rotation=45)
         else:
             if self.dtypes[col] == "int64" and self.ncounts[col] > 0:
                 p_input = stats.trimboth(pd.to_numeric(
-                    self.tbl[col].dropna()), proportiontocut)
+                    vals.dropna()), proportiontocut)
             else:
                 p_input = stats.trimboth(
-                    self.tbl[col].dropna(), proportiontocut)
-            hist, edges = np.histogram(
-                p_input, density=False, bins=min(self.vcounts[col], max_bins))
-            edges_n = [np.round((edges[i] + edges[i + 1]) / 2, 1)
-                       for i in range(len(edges) - 1)]
-            ax = sns.distplot(p_input)
-            ax.set_title(col + "\n(avg:%.2f p50:%.2f)" %
-                         (np.mean(self.tbl[col].dropna()), np.median(self.tbl[col].dropna())))
+                    vals.dropna(), proportiontocut)
+            ax = sns.histplot(p_input, **kwargs)
+            if xlim:
+                ax.set(xlim=xlim)                
+            ax.set_title(col + "\n(avg:%.3f p50:%.3f)" %
+                         (np.mean(vals.dropna()), np.median(vals.dropna())))
         return convert_fig_to_html(ax.get_figure(), figsize)
 
     def outliers(self, cols=None, col_ptn=None, n_row=10, std_thr=5, show_all_cols=False, **kwargs):
@@ -331,7 +333,7 @@ class EDATable:
             tbl_o = self.tbl[
                 (np.abs(self.tbl[c] - self.tbl[c].mean()) > (std_thr * self.tbl[c].std()))]
             if len(tbl_o) > 0:
-                edu.print_title("Column: %s" % c)
+                edu.print_title("Column: %s" % c, 'b')
                 print("%.3f +- %.1f * %.3f" %
                       (self.tbl[c].mean(), std_thr, self.tbl[c].std()))
                 print("Total: %d Outlier: %d (%.3f%%)" %
@@ -400,7 +402,7 @@ class EDATable:
                         fig = ax.get_figure()
                     elif self.dtypes[c1] != "object" and self.dtypes[c2] != "object":
                         ax = sns.regplot(
-                            self.tbl[c1], self.tbl[c2])
+                            x=self.tbl[c1], y=self.tbl[c2])
                         ax.set(xlim=xlim, ylim=ylim)
                         fig = ax.get_figure()
                     elif self.dtypes[c1] == "object" and self.dtypes[c2] != "object":

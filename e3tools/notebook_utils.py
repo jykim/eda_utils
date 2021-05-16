@@ -118,16 +118,19 @@ def get_params_from_filename(filename):
     Output:
         EFFECT_SIZE-0.01|START_DATE-20170701|END_DATE-20170705
     """
-    return ".".join(filename.split(".")[1:-1])
+    # return ".".join(filename.split(".")[1:-1])
+    return ".".join(filename.split(".")[:-1])
 
 
-def import_csv_files(fileptn, parse_params = True):
+def import_csv_files(fileptn, parse_params = True, verbose=True, **kwargs):
     """Import multiple csv output files into DataFrame"""
     filenames = glob.glob(fileptn)
     filenames.sort()
     tbls = []
     for e in filenames:
-        tbl = pd.read_csv(e)
+        if verbose:
+            print(e)
+        tbl = pd.read_csv(e, **kwargs)
         if parse_params:
             for k,v in str2dict(get_params_from_filename(basename(e))).items():
                 tbl[k] = v

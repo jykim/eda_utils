@@ -16,6 +16,7 @@ from bokeh.palettes import d3, brewer
 from bokeh.io import show, output_notebook
 from bokeh.plotting import figure, ColumnDataSource
 from bokeh.models import HoverTool, Range1d, CategoricalColorMapper, LinearColorMapper
+from bokeh.models import OpenURL, TapTool
 from bokeh.models.glyphs import VBar
 import e3tools.eda_display_utils as edu
 
@@ -205,8 +206,9 @@ def plot_funnel_chart(
     return fig
 
 
-def scatter_with_hover(df, x, y, hover_cols=None, marker="o", color=None, color_scale='categorical',
-                       title=None, figsize=(300, 300), x_range=None, y_range=None, **kwargs):
+def scatter_with_hover(df, x, y, hover_cols=None, marker="o", 
+                       color_col=None, color_scale='categorical', color_palette='RdYlGn', color_count=11,
+                       title=None, figsize=(300, 300), x_range=None, y_range=None, url=None, **kwargs):
     """
     Plots an interactive scatter plot of `x` vs `y` using bokeh, with automatic tooltips showing columns from `df`.
     Parameters
@@ -227,19 +229,23 @@ def scatter_with_hover(df, x, y, hover_cols=None, marker="o", color=None, color_
         Columns to be mapped into color value
     color_scale: str
         'categorical' vs 'linear' color scale
+    color_palette: (for 'linear' color scale)
+        Full list: https://docs.bokeh.org/en/latest/docs/reference/palettes.html
+    color_count: (for 'linear' color scale)
+        How many colors to use?
     **kwargs
         Any further arguments to be passed to fig.scatter
     """
-    if color:
-        col_color = df[color].unique().tolist()
+    if color_col:
+        col_color = df[color_col].unique().tolist()
         if color_scale == 'categorical':
             palette = d3['Category10'][min(max(len(col_color), 3), 10)]
             color_map = CategoricalColorMapper(factors=col_color,
                                                palette=palette)
         elif color_scale == 'linear':
-            color_map = LinearColorMapper(palette=brewer['RdYlGn'][11], low=df[
-                                          color].min(), high=df[color].max())
-        color_val = {'field': color, 'transform': color_map}
+            color_map = LinearColorMapper(palette=brewer[color_palette][color_count], low=df[
+                                          color_col].min(), high=df[color_col].max())
+        color_val = {'field': color_col, 'transform': color_map}
     else:
         color_val = 'black'
     r, r_pval = stats.pearsonr(df[x], df[y])
@@ -253,9 +259,9 @@ def scatter_with_hover(df, x, y, hover_cols=None, marker="o", color=None, color_
         title = ""
     source = ColumnDataSource(data=df)
     fig = figure(width=figsize[0], height=figsize[1], title=title, tools=[
-                 'box_zoom', 'reset', 'wheel_zoom'])
+                 'box_zoom', 'reset', 'tap' , 'wheel_zoom'])
     fig.scatter(x, y, source=source, name='main', marker=marker,
-                color=color_val, legend_label=color, **kwargs)
+                color=color_val, **kwargs)
 
     if x_range:
         fig.x_range = Range1d(*x_range)
@@ -268,6 +274,11 @@ def scatter_with_hover(df, x, y, hover_cols=None, marker="o", color=None, color_
     else:
         hover.tooltips = [(c, '@' + c) for c in hover_cols]
     fig.add_tools(hover)
+
+    if url:
+        taptool = fig.select(type=TapTool)
+        taptool.callback = OpenURL(url=url)
+
 
     fig.yaxis.axis_label = y
     fig.xaxis.axis_label = x

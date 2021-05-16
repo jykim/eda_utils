@@ -1,6 +1,7 @@
 import re
 import pandas as pd
 import numpy as np
+import seaborn as sns
 import matplotlib.pyplot as plt
 
 from sklearn.preprocessing import LabelEncoder, OrdinalEncoder, OneHotEncoder
@@ -11,8 +12,12 @@ from sklearn.feature_selection import VarianceThreshold, SelectKBest
 from sklearn.feature_selection import f_regression, chi2, f_classif
 
 from sklearn.model_selection import cross_val_score, cross_val_predict, learning_curve, train_test_split
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.utils.fixes import loguniform
+
 from sklearn.metrics import roc_auc_score, accuracy_score, confusion_matrix, log_loss, plot_roc_curve
-from sklearn.metrics import mean_squared_error, mean_absolute_error, explained_variance_score
+from sklearn.metrics import mean_squared_error, mean_absolute_error, explained_variance_score, classification_report
 from sklearn.inspection import plot_partial_dependence, permutation_importance
 
 import e3tools.eda_table as et
@@ -21,8 +26,17 @@ import e3tools.eda_display_utils as edu
 from scipy.stats import spearmanr
 from scipy.cluster import hierarchy
 from collections import OrderedDict, Counter
-from imblearn.under_sampling import RandomUnderSampler
 from copy import deepcopy
+
+import collections
+import pydotplus
+from sklearn import metrics, tree
+from IPython.display import Image, display
+
+try:
+    import cPickle as pickle
+except BaseException:
+    import pickle
 
 def split_feature_labels(tbl, c_label):
     y = tbl[c_label].copy()
@@ -42,22 +56,58 @@ def apply_transform(transformer, vals):
     return transformer.fit_transform(vals.reshape(-1, 1)).flatten()
 
 
+def print_decision_tree(clf, feature_names, class_names):
+    sns.set(color_codes=True)
+
+    dot_data = tree.export_graphviz(clf, out_file=None,
+                             feature_names=feature_names, filled=True, rounded=True,
+                             class_names=class_names)
+    graph = pydotplus.graph_from_dot_data(dot_data)
+    colors = ('grey', 'yellow')
+    edges = collections.defaultdict(list)
+
+    for edge in graph.get_edge_list():
+        edges[edge.get_source()].append(int(edge.get_destination()))
+
+    for edge in edges:
+        edges[edge].sort()    
+        for i in range(2):
+            dest = graph.get_node(str(edges[edge][i]))[0]
+            dest.set_fillcolor(colors[i])
+    display(Image(graph.create_png()))
+
+
+def print_decision_tree_new(clf, x_data, y_data, feature_names, class_names):
+    viz = dtreeviz(clf, 
+                   x_data=x_data,
+                   y_data=y_data,
+                   target_name='class',
+                   feature_names=feature_names, 
+                   class_names=class_names, 
+                   title="Decision Tree")
+    display(viz)
+
+
 class MLTable(et.EDATable):
     """This class prepare data for supervised learning
     - Note that the data type for c_label should be binary
     """
-    def __init__(self, tbl_d, c_label=None, tbl_h=None, name='Default', dtypes={}):
+    def __init__(self, tbl_d, c_label=None, tbl_h=None, name='Default', dtypes={}, label_values=None):
         """ Initialize table for ML
             - tbl_h: optional held-out DataFrame
         """
         self.name = name
         self.c_label = c_label
-        self.cs_special = ["rowtype", self.c_label]
+        self.cs_special = [e for e in ["rowtype", self.c_label] if e is not None]
+        self.label_values = label_values
         tbl_d["rowtype"] = "dev"
         if tbl_h is None:
             tbl = tbl_d
         else:
-            tbl_h[c_label] = None
+            # import pdb; pdb.set_trace()
+            if c_label not in tbl_h.columns:
+                print("Adding a dummy label column")
+                tbl_h[c_label] = None
             tbl_h["rowtype"] = "heldout"
             tbl = pd.concat([tbl_d, tbl_h], axis=0, sort=False)
             tbl.reset_index(inplace=True, drop=True)
@@ -96,7 +146,9 @@ class MLTable(et.EDATable):
         """
         res = []
         for c in self.cols:
-            if self.dtypes[c] in ('category', 'object'):
+            if c in self.cs_special:
+                res.append(self.tbl[c])                
+            elif self.dtypes[c] in ('category', 'object'):
                 if c in topk_filters:
                     topk = topk_filters[c]
                 elif 'all' in topk_filters:
@@ -112,7 +164,7 @@ class MLTable(et.EDATable):
                 # Scaling
                 if c in scalers:
                     v_scaled = apply_transform(scalers[c], self.tbl[c].values)
-                elif 'all' in scalers:
+                elif 'all' in scalers and scalers['all']:
                     v_scaled = apply_transform(scalers['all'], self.tbl[c].values)
                 else:
                     v_scaled = self.tbl[c].values
@@ -127,7 +179,7 @@ class MLTable(et.EDATable):
         self.tbl_n = pd.concat(res, axis=1)
         return self.tbl_n
 
-    def encode(self, cols=None, col_ptn=None, impute=None):
+    def encode(self, cols=None, col_ptn=None, impute=None, omit_constant=True):
         """ Encode column values as features
         """
         if col_ptn:
@@ -141,9 +193,13 @@ class MLTable(et.EDATable):
             tbl = self.tbl
         res = []
         for c in self.cs_special:
+            # if c == self.c_label and task_type == 'classification-multiclass':
+            #     le = preprocessing.LabelEncoder()
+            #     self.label_values
+            # else:
             res.append(tbl[c])
         for c in cols:
-            if self.vcounts[c] <= 1:
+            if self.vcounts[c] <= 1 and omit_constant:
                 print("Omitting constant: %s" % c)
                 continue
             if c in self.cs_special:
@@ -177,14 +233,14 @@ class MLTable(et.EDATable):
             self.tbl_e = self.tbl_e[self.cs_special+cs_selected.tolist()]
         print('Encoded DF Shape:', self.tbl_e.shape)
 
-    def split(self, test_size=0.2, random_state=None, silent=False):
+    def split(self, test_size=0.2, random_state=None, silent=False, verbose=False):
         """ Split dataset for train/test
         """
         if not hasattr(self, "tbl_e"):
             print("Encode columns as features first!")
             return
         self.dev = self.tbl_e[self.tbl_e.rowtype=="dev"].drop("rowtype", axis=1)
-        self.heldout = self.tbl_e[self.tbl_e.rowtype=="heldout"].drop(["rowtype", self.c_label], axis=1)
+        self.heldout = self.tbl_e[self.tbl_e.rowtype=="heldout"].drop(["rowtype"], axis=1) #, self.c_label
         if len(self.heldout) > 0 and not silent:
             print('Heldout Shape:', self.heldout.shape)
 
@@ -193,6 +249,11 @@ class MLTable(et.EDATable):
             print('Dev Shape:', self.dev.shape)
             print('Train Shape:', self.train.shape)
             print('Test Shape:', self.test.shape)
+
+        if verbose:
+            self.colinfo()
+            EDATable(self.tbl_n).colinfo()
+            EDATable(self.tbl_e).colinfo()
 
     def fcorr(self):
         """ Visualize feature correlation
@@ -236,10 +297,14 @@ class MLTable(et.EDATable):
 class MLModel:
     """This class abstract various ML models
     """
-    def __init__(self, name, model, params={}):
+    def __init__(self, name, model=None, model_filename=None, param_dist={}):
         self.name = name
-        self.model = model
-        self.params = params
+        if model is not None:
+            self.model = model
+        elif model_filename:
+            with open('%s.pkl' % model_filename, 'rb') as fin:
+                self.model = pickle.load(fin)
+        self.param_dist = param_dist
 
     def train(self, X, y):
         self.model.fit(X, y)
@@ -247,18 +312,30 @@ class MLModel:
     def get_ypred_from_score(self, ypred_score):
         return [self.model.classes_[i] for i in np.argmax(ypred_score, 1)]
 
-
     def inspect(self):
         """Inspect model internals
         """
         pass
 
-    def optimize(self):
+    def optimize(self, X, y, n_iter_search=1, scoring=None):
         """Find optimal hyperparameters
         """
-        pass
+        self.model = RandomizedSearchCV(
+            estimator=self.model, 
+            param_distributions=self.param_dist,
+            n_iter=n_iter_search,
+            scoring=scoring)
+        self.model.fit(X, y)
+        print("%s:" % self.name, self.model.best_params_)
 
-    def evaluate(self, X, y, task_type, verbose=False, ax=None, ypred=None, ypred_score=None):
+
+    def predict(self, tbl_X):
+        res = tbl_X
+        res['Prediction'] = self.model.predict(tbl_X.values)
+        return res
+
+
+    def evaluate(self, X, y, task_type, verbose=False, ax=None, ypred=None, ypred_score=None, ypred_score_thr=None, label_values=None):
         """
         Calculates metrics and display it
         """
@@ -270,6 +347,9 @@ class MLModel:
         if task_type == "classification-binary":
             if ypred_score is None:
                 ypred_score = self.model.predict_proba(X)
+            if ypred_score_thr:
+                print("ypred_score_thr: %s" % ypred_score_thr)
+                ypred = np.where(ypred_score[:, 1] > ypred_score_thr, True, False)
                 
             accuracy = accuracy_score(y, ypred)
             roc_auc = roc_auc_score(y, pd.DataFrame(ypred_score)[1])
@@ -279,8 +359,17 @@ class MLModel:
             type1_error = confusion[0][1] / confusion[0].sum() # False Positive
             type2_error = confusion[1][0] / confusion[1].sum() # False Negative
             
+            # Score threshold by output
+            # pred_score = pd.DataFrame({'pred':ypred, 'score':ypred_score[:, 1]})
+            # et.EDATable(pred_score).desc_group('pred', output='desc')
+            # display(pred_score.pred.value_counts())
+
             if verbose:
-                plot_roc_curve(self.model, X, y, ax=ax)
+                # import pdb; pdb.set_trace()
+                print('Confusion Matrix: \n', confusion)
+                sns.histplot(ypred_score[:, 1], kde=False, bins=50, ax=ax)
+                ax2 = ax.twinx()
+                plot_roc_curve(self.model, X, y, ax=ax2)
 
             return {
                 "model_name":self.name,
@@ -289,22 +378,27 @@ class MLModel:
                 "log_loss":logloss, 
                 "type1_error":type1_error,
                 "type2_error":type2_error
-                }
+            }
         elif task_type == "classification-multiclass":
             ypred_score = self.model.predict_proba(X)
             accuracy = accuracy_score(y, ypred)
-            # roc_auc = roc_auc_score(y, pd.DataFrame(ypred_score)[1], multi_class="ovr")
-            confusion = confusion_matrix(y, ypred)
+            roc_auc = roc_auc_score(y, ypred_score, multi_class="ovr")
+            confusion = confusion_matrix(y, ypred, labels=label_values)
             logloss = log_loss(y, ypred_score)
+            # display(ypred_score)
+            # import pdb; pdb.set_trace()
             
             if verbose:
-                print('Confusion Matrix: \n', confusion)
+                # display(ypred)
+                print(classification_report(y, ypred, labels=label_values))
+                print('Confusion Matrix:')
+                display(pd.DataFrame(confusion, index=label_values, columns=label_values))
 
             return {
                 "model_name":self.name,
                 "accuracy":accuracy, 
                 "log_loss":logloss, 
-                # "roc_auc":roc_auc,
+                "roc_auc":roc_auc,
                 }            
         else:
             mse = mean_squared_error(y, ypred)
@@ -317,6 +411,10 @@ class MLModel:
                 "mean_absolute_error":mae,
                 "explained_variance_score":evs,
                 }
+
+    def export_to_file(self, filename):
+        with open('%s.pkl' % filename, 'wb') as fout:
+            pickle.dump(self.model, fout)
 
 class MLBench:
     """This class performs supervised learning for given set of data
@@ -338,6 +436,12 @@ class MLBench:
                 self.fit_models[(tn, mn)] = deepcopy(mdl)
                 self.fit_models[(tn, mn)].train(*split_feature_labels(tbl.train, tbl.c_label))
 
+    def optimize_batch(self, n_iter_search=1, scoring=None):
+        for tn, tbl in self.tables.items():
+            for mn, mdl in self.models.items():
+                self.fit_models[(tn, mn)] = deepcopy(mdl)
+                self.fit_models[(tn, mn)].optimize(*split_feature_labels(tbl.train, tbl.c_label), n_iter_search, scoring)
+
     def cross_validate_batch(self, scoring='roc_auc', nfolds=5):
         res = []
         for tn, tbl in self.tables.items():
@@ -348,23 +452,34 @@ class MLBench:
                 res.append(eval_res)
         return pd.DataFrame(res).drop(['train_set', 'test_set'], axis=1)
 
-    def evaluate_batch(self, verbose=False, figsize=(6,6)):
+    def evaluate_batch(self, dataset='validation', verbose=False, figsize=(6,6), **kwargs):
         res = []
+
         for tn, tbl in self.tables.items():
-            if verbose:
+            if dataset=='validation':
+                tbl_eval = tbl.test
+            elif dataset=='heldout':
+                tbl_eval = tbl.heldout
+            if verbose and tbl.task_type == "classification-binary":
                 fig, axes = plt.subplots(1, len(self.models), figsize=(figsize[0]*len(self.models), figsize[1]), sharey=False)
             else:
                 axes = [None] * len(self.models)
             for j, (mn, mdl)  in enumerate(self.models.items()):
                 eval_res = tbl.get_info()
                 eval_res.update(
-                    self.fit_models[(tn, mn)].evaluate(*split_feature_labels(tbl.test, tbl.c_label), tbl.task_type, verbose=verbose, ax=axes[j])
+                    self.fit_models[(tn, mn)].evaluate(*split_feature_labels(tbl_eval, tbl.c_label), tbl.task_type, verbose=verbose, ax=axes[j], **kwargs)
                 )
                 res.append(eval_res)
         return pd.DataFrame(res)
 
+    def export_batch(self):
+        for tn, tbl in self.tables.items():
+            for mn, mdl in self.models.items():
+                self.fit_models[(tn, mn)].export_to_file("%s_%s" % (tn, mn))        
+
     def evaluate_ensemble(self, model_weights={}):
-        # e_outcome = OrderedDict()
+        """ Build an ensemble of existing smodels
+        """
         e_model = None
         e_table = None
         e_ypred = None
@@ -399,26 +514,34 @@ class MLBench:
         for tn, tbl in self.tables.items():
             fig, axes = plt.subplots(1, len(self.models), figsize=(figsize[0]*len(self.models), figsize[1]), sharey=False)
             for j, (mn, mdl) in enumerate(self.models.items()):
-                axes[j].set_title("Feature Importance for %s \non %s" % (mdl.name, tbl.name))
+                if len(self.models.items()) == 1:
+                    ax = axes
+                else:
+                    ax = axes[j]
+                ax.set_title("Feature Importance for %s \non %s" % (mdl.name, tbl.name))
                 X_train, y_train = split_feature_labels(tbl.train, tbl.c_label)
                 result = permutation_importance(self.fit_models[(tn, mn)].model, X_train, y_train, scoring=scoring, random_state=random_state)
                 sorted_idx = result.importances_mean.argsort()
-                axes[j].boxplot(result.importances[sorted_idx].T,
+                ax.boxplot(result.importances[sorted_idx].T,
                            vert=False, labels=X_train.columns[sorted_idx])
 
     def plot_learning_curve(self, scoring=None, random_state=None):
         for tn, tbl in self.tables.items():
             fig, axes = plt.subplots(1, len(self.models), figsize=(5*len(self.models), 4), sharey=False)
             for j, (mn, mdl) in enumerate(self.models.items()):
-                axes[j].set_title("Learning Curve for %s \non %s" % (mdl.name, tbl.name))
+                if len(self.models.items()) == 1:
+                    ax = axes
+                else:
+                    ax = axes[j]
+                ax.set_title("Learning Curve for %s \non %s" % (mdl.name, tbl.name))
                 train_sizes = [int(float(len(tbl.train)) * i/10) for i  in range(1, 9)]
                 _, train_scores, test_scores = \
                     learning_curve(mdl.model, *split_feature_labels(tbl.train, tbl.c_label), 
                         train_sizes=train_sizes, scoring=scoring, random_state=random_state)
                 train_scores_mean = np.mean(train_scores, axis=1)
                 test_scores_mean = np.mean(test_scores, axis=1)
-                axes[j].plot(train_sizes, train_scores_mean, 'o-', color="r",
+                ax.plot(train_sizes, train_scores_mean, 'o-', color="r",
                              label="Training score")
-                axes[j].plot(train_sizes, test_scores_mean, 'o-', color="g",
+                ax.plot(train_sizes, test_scores_mean, 'o-', color="g",
                              label="Cross-validation score")
-                axes[j].legend(loc="best")
+                ax.legend(loc="best")
